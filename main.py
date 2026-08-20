@@ -3,7 +3,11 @@ import logging
 import os
 import sys
 
-# Redirect all stdout and stderr to a log file instead of the browser
+# Disable tqdm and Hugging Face progress bars BEFORE importing HF/Transformers
+os.environ["TQDM_DISABLE"] = "1"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+# Redirect stdout and stderr with unbuffered flushing
 sys.stdout = open("evaluation.log", "w", buffering=1)
 sys.stderr = sys.stdout
 
@@ -11,7 +15,12 @@ import matplotlib.pyplot as plt
 import torch
 import transformers
 from huggingface_hub import login
+from huggingface_hub.utils import disable_progress_bars
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+# Explicitly disable HF progress bars programmatically
+disable_progress_bars()
+
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 if not HF_TOKEN:
@@ -20,14 +29,11 @@ if not HF_TOKEN:
     )
     print("Run: export HF_TOKEN='your_token_here'", file=sys.stderr)
     sys.exit(1)
-# ==============================================================================
-# 1. GLOBAL HUGGING FACE AUTHENTICATION TOKEN
-# ==============================================================================
 
 # Authenticate session globally
 login(token=HF_TOKEN)
 
-# Enable verbose logging so progress displays in server log files
+# Enable verbose logging so progress displays in line-by-line text
 transformers.logging.set_verbosity_info()
 
 # Check Internet Connectivity
@@ -35,12 +41,12 @@ import urllib.request
 
 try:
     urllib.request.urlopen("https://google.com", timeout=3)
-    print("Internet/Wi-Fi is connected!")
+    print("Internet/Wi-Fi is connected!", flush=True)
 except Exception:
-    print("No internet connection.")
+    print("No internet connection.", flush=True)
 
 # ==============================================================================
-# 2. MODEL CONFIGURATIONS (~64 GB VRAM Footprint)
+# MODEL CONFIGURATIONS (~64 GB VRAM Footprint)
 # ==============================================================================
 MODEL_SUITE = {
     "Qwen3.8-27B-8bit": {
@@ -95,9 +101,9 @@ def run_high_vram_eval(models_dict, prompts):
     results = {}
 
     for name, config in models_dict.items():
-        print(f"\n========================================")
-        print(f"Loading {name} ({config['repo']})...")
-        print(f"========================================")
+        print(f"\n========================================", flush=True)
+        print(f"Loading {name} ({config['repo']})...", flush=True)
+        print(f"========================================", flush=True)
 
         try:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -121,11 +127,11 @@ def run_high_vram_eval(models_dict, prompts):
             }
 
         except Exception as e:
-            print(f"Skipping {name} due to error: {e}")
+            print(f"Skipping {name} due to error: {e}", flush=True)
             continue
 
         finally:
-            print(f"Freeing VRAM allocated to {name}...")
+            print(f"Freeing VRAM allocated to {name}...", flush=True)
             if "model" in locals():
                 del model
             if "tokenizer" in locals():
@@ -133,7 +139,7 @@ def run_high_vram_eval(models_dict, prompts):
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            print("VRAM cleared.\n")
+            print("VRAM cleared.\n", flush=True)
 
     if results:
         names = list(results.keys())
@@ -163,10 +169,9 @@ def run_high_vram_eval(models_dict, prompts):
         plt.legend()
         plt.tight_layout()
 
-        # Save plot to disk instead of trying to render interactive window
         plt.savefig("eval_results.png")
         plt.close()
-        print("Plot successfully saved to eval_results.png")
+        print("Plot successfully saved to eval_results.png", flush=True)
 
 
 if __name__ == "__main__":

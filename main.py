@@ -9,6 +9,7 @@ import gc
 import copy
 import random
 import time
+import json
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
@@ -55,6 +56,13 @@ def log_vram(stage_name=""):
 
 print("Initializing setup...", flush=True)
 log_vram("Startup")
+
+RUN_OUTPUT_ROOT = "per_model_outputs"
+os.makedirs(RUN_OUTPUT_ROOT, exist_ok=True)
+
+# Number of C4 samples to collect before model processing.
+C4_SAMPLE_CAP = 20000
+
 def unwrap_clippable_linears(model):
     """Replaces Gemma4ClippableLinear wrappers with their inner Linear/Linear4bit layer for PEFT compatibility."""
     for name, module in list(model.named_modules()):
@@ -164,11 +172,11 @@ for item in streamed_dataset:
     text = item['text'][:300].strip()
     if len(text) > 100:
         raw_samples.append(text)
-    if len(raw_samples) >= 2000:
+    if len(raw_samples) >= C4_SAMPLE_CAP:
         break
 
-print(f"Extracted {len(raw_samples)} initial C4 samples. Sampling 200 items for classification...", flush=True)
-selected_texts = random.sample(raw_samples, 200)
+print(f"Extracted {len(raw_samples)} initial C4 samples. Using all collected samples for classification...", flush=True)
+selected_texts = raw_samples
 
 print("Running bias annotation pipeline across selected texts...", flush=True)
 pipeline_outputs = bias_pipeline(selected_texts, batch_size=16)
@@ -332,6 +340,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
 
         categorical_records = {name: [] for name in model_variants}
         bias_scores_records = {name: [] for name in model_variants}
+        generated_outputs_records = {name: [] for name in model_variants}
 
         print("--> Running 300 Mass Prompt Evaluation Sweep...", flush=True)
         for var_name, weights in model_variants.items():
@@ -351,12 +360,19 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
 
             print(f"      Annotating {len(generated_texts)} responses with bias classifier...", flush=True)
             outputs = bias_pipeline(generated_texts, batch_size=16)
-            for out in outputs:
+            for prompt_text, generated_text, out in zip(eval_prompts, generated_texts, outputs):
                 lbl = str(out['label']).upper()
                 conf = out['score']
                 prob = conf if (lbl == "LABEL_1" or lbl == "BIASED") else (1.0 - conf)
                 bias_scores_records[var_name].append(float(prob))
                 categorical_records[var_name].append(lbl)
+                generated_outputs_records[var_name].append({
+                    "prompt": prompt_text,
+                    "generated_text": generated_text,
+                    "classifier_label": lbl,
+                    "classifier_score": float(conf),
+                    "bias_probability": float(prob)
+                })
 
         # Temperature Sweep Evaluation
         print("--> Executing Temperature Vulnerability Sweep...", flush=True)
@@ -385,8 +401,44 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         all_model_results[model_id] = {
             "categorical": categorical_records,
             "bias_scores": bias_scores_records,
-            "temp_results": temp_results
+            "temp_results": temp_results,
+            "generated_outputs": generated_outputs_records
         }
+
+        # Save adapters and outputs per model immediately after that model finishes.
+        model_safe_name = model_id.replace("/", "_")
+        model_output_dir = os.path.join(RUN_OUTPUT_ROOT, model_safe_name)
+        os.makedirs(model_output_dir, exist_ok=True)
+
+        adapter_bundle_path = os.path.join(model_output_dir, "adapter_weights.pt")
+        torch.save(
+            {
+                "baseline": starting_weights,
+                "poisoned": learnt_biased_weights,
+                "unlearned": unlearnt_weights
+            },
+            adapter_bundle_path
+        )
+
+        outputs_path = os.path.join(model_output_dir, "model_outputs.json")
+        with open(outputs_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "model_id": model_id,
+                    "target_gpus": TARGET_GPUS,
+                    "dynamic_memory_caps": dynamic_mem,
+                    "temperatures": temperatures,
+                    "categorical": categorical_records,
+                    "bias_scores": bias_scores_records,
+                    "temp_results": temp_results,
+                    "generated_outputs": generated_outputs_records
+                },
+                f,
+                indent=2
+            )
+
+        print(f"--> Saved adapter weights to {adapter_bundle_path}", flush=True)
+        print(f"--> Saved per-model outputs to {outputs_path}", flush=True)
         
         elapsed = time.time() - start_time
         print(f"--> Finished processing {model_id} in {elapsed/60:.2f} minutes.", flush=True)

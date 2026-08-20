@@ -41,7 +41,7 @@ torch.manual_seed(42)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 # Explicitly exclude GPU 3 from model workload
-TARGET_GPUS = [0, 1, 2]
+TARGET_GPUS = [0, 1, 2,3]
 
 def log_vram(stage_name=""):
     """Helper function to output current VRAM consumption across all GPUs."""

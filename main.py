@@ -2,24 +2,49 @@ import gc
 import logging
 import os
 import sys
+import urllib.request
 
-# Disable tqdm and Hugging Face progress bars BEFORE importing HF/Transformers
-os.environ["TQDM_DISABLE"] = "1"
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-
-# Redirect stdout and stderr with unbuffered flushing
+# Redirect stdout and stderr with unbuffered line flushing
 sys.stdout = open("evaluation.log", "w", buffering=1)
 sys.stderr = sys.stdout
 
+# ==============================================================================
+# MONKEY-PATCH TQDM FOR FILE-BASED LOGGING (PREVENTS HANGS & OVERWRITING)
+# ==============================================================================
+import tqdm.auto
+import tqdm.std
+
+
+class LineByLineTqdm(tqdm.std.tqdm):
+
+    def __init__(self, *args, **kwargs):
+        # Update at most once every 3 seconds to avoid flooding the log file
+        kwargs.setdefault("mininterval", 3.0)
+        kwargs.setdefault("file", sys.stdout)
+        kwargs.setdefault("ascii", True)  # Prevent broken unicode chars in logs
+        super().__init__(*args, **kwargs)
+
+    def display(self, msg=None, pos=None):
+        if msg is None:
+            msg = self.__str__()
+        # Strip carriage returns (\r) and force a new line with an explicit flush
+        clean_msg = msg.replace("\r", "").strip()
+        if clean_msg:
+            sys.stdout.write(clean_msg + "\n")
+            sys.stdout.flush()
+
+
+# Override all tqdm imports globally before loading transformers/huggingface
+tqdm.std.tqdm = LineByLineTqdm
+tqdm.auto.tqdm = LineByLineTqdm
+tqdm.tqdm = LineByLineTqdm
+
+# Now import PyTorch and Transformers
 import matplotlib.pyplot as plt
 import torch
 import transformers
 from huggingface_hub import login
-from huggingface_hub.utils import disable_progress_bars
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
-# Explicitly disable HF progress bars programmatically
-disable_progress_bars()
 
 HF_TOKEN = os.getenv("HF_TOKEN")
 
@@ -33,12 +58,10 @@ if not HF_TOKEN:
 # Authenticate session globally
 login(token=HF_TOKEN)
 
-# Enable verbose logging so progress displays in line-by-line text
+# Enable verbose logging so shard loading displays progress
 transformers.logging.set_verbosity_info()
 
 # Check Internet Connectivity
-import urllib.request
-
 try:
     urllib.request.urlopen("https://google.com", timeout=3)
     print("Internet/Wi-Fi is connected!", flush=True)
@@ -113,7 +136,9 @@ def run_high_vram_eval(models_dict, prompts):
                 config["repo"], **config["kwargs"]
             )
 
-            inputs = tokenizer(prompts[0], return_tensors="pt").to(model.device)
+            inputs = tokenizer(prompts[0], return_tensors="pt").to(
+                model.device
+            )
             with torch.no_grad():
                 outputs = model.generate(**inputs, max_new_tokens=30)
             text = tokenizer.decode(outputs[0], skip_special_tokens=True)

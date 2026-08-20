@@ -153,6 +153,34 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_use_double_quant=True
 )
 
+def validate_4bit_quantization(model, model_id):
+    """Fail fast if the loaded model does not contain 4-bit quantized linear layers."""
+    import bitsandbytes as bnb
+
+    linear4bit_count = 0
+    linear8bit_count = 0
+    fp_linear_count = 0
+
+    for _, module in model.named_modules():
+        if isinstance(module, bnb.nn.Linear4bit):
+            linear4bit_count += 1
+        elif isinstance(module, bnb.nn.Linear8bitLt):
+            linear8bit_count += 1
+        elif isinstance(module, torch.nn.Linear):
+            fp_linear_count += 1
+
+    print(
+        f"--> Quantization check for {model_id}: "
+        f"Linear4bit={linear4bit_count}, Linear8bit={linear8bit_count}, FPLinear={fp_linear_count}",
+        flush=True
+    )
+
+    if linear4bit_count == 0:
+        raise RuntimeError(
+            f"4-bit quantization did not apply for {model_id}. "
+            "Model load was aborted to prevent unintended high-VRAM usage."
+        )
+
 print("\n[STEP 0/3] Loading DA-RoBERTa-BABE-FT Classifier Pipeline (CPU)...", flush=True)
 bias_pipeline = pipeline(
     "text-classification", 
@@ -248,10 +276,13 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         base_model = AutoModelForCausalLM.from_pretrained(
             model_id,
             quantization_config=bnb_config,
+            torch_dtype=torch.bfloat16,
             device_map=clean_device_map,
             low_cpu_mem_usage=True,
             trust_remote_code=True
         )
+
+        validate_4bit_quantization(base_model, model_id)
         log_vram("Loaded Base Model")
 
         # Unwrap Gemma 4 custom wrappers prior to PEFT setup

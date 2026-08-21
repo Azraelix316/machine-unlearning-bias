@@ -41,8 +41,9 @@ torch.manual_seed(42)
 # Prevent VRAM fragmentation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-# Explicitly exclude GPU 3 from model workload
-TARGET_GPUS = [0, 1, 2,3]
+# Use all four GPUs, but leave headroom for LoRA/optimizer/activations.
+TARGET_GPUS = [0, 1, 2, 3]
+DEVICE_MAP_BUFFER_GB = 5.0
 
 def log_vram(stage_name=""):
     """Helper function to output current VRAM consumption across all GPUs."""
@@ -70,8 +71,8 @@ def unwrap_clippable_linears(model):
             parent_name, _, child_name = name.rpartition(".")
             parent = model.get_submodule(parent_name) if parent_name else model
             setattr(parent, child_name, module.linear)
-def get_dynamic_max_memory(target_gpus=TARGET_GPUS, buffer_gb=1.0):
-    """Calculates dynamic free VRAM per GPU. Hard-caps GPU 3 to 0GiB to keep it available."""
+def get_dynamic_max_memory(target_gpus=TARGET_GPUS, buffer_gb=DEVICE_MAP_BUFFER_GB):
+    """Calculates dynamic free VRAM per GPU while reserving headroom for training-time allocations."""
     max_memory = {}
     for i in range(torch.cuda.device_count()):
         if i in target_gpus:
@@ -80,12 +81,12 @@ def get_dynamic_max_memory(target_gpus=TARGET_GPUS, buffer_gb=1.0):
             usable_gb = max(0.1, free_gb - buffer_gb)
             max_memory[i] = f"{usable_gb:.2f}GiB"
         else:
-            max_memory[i] = "0GiB"  # Strictly reserve GPU 3
+            max_memory[i] = "0GiB"
     return max_memory
 
 def build_sharded_device_map(model_id, target_gpus=TARGET_GPUS):
-    """Generates a dynamic device map sharded across active GPUs, preventing CPU offload."""
-    max_memory = get_dynamic_max_memory(target_gpus=target_gpus, buffer_gb=1.2)
+    """Generates a dynamic device map sharded across active GPUs without forcing overflow layers onto VRAM."""
+    max_memory = get_dynamic_max_memory(target_gpus=target_gpus, buffer_gb=DEVICE_MAP_BUFFER_GB)
     
     config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
     with torch.device("meta"):
@@ -97,21 +98,14 @@ def build_sharded_device_map(model_id, target_gpus=TARGET_GPUS):
         no_split_module_classes=getattr(meta_model, "_no_split_modules", [])
     )
 
-    # Sort target GPUs by current unallocated VRAM to prioritize freer cards
-    gpu_free_bytes = {i: torch.cuda.mem_get_info(i)[0] for i in target_gpus}
-    sorted_target_gpus = sorted(gpu_free_bytes.keys(), key=lambda k: gpu_free_bytes[k], reverse=True)
+    clean_device_map = dict(inferred_map)
 
-    clean_device_map = {}
-    overflow_idx = 0
-
-    for module_name, device in inferred_map.items():
-        if device in ("cpu", "disk") or device not in target_gpus:
-            # Round-robin distribution of overflow layers across active GPUs
-            assigned_gpu = sorted_target_gpus[overflow_idx % len(sorted_target_gpus)]
-            clean_device_map[module_name] = assigned_gpu
-            overflow_idx += 1
-        else:
-            clean_device_map[module_name] = device
+    cpu_or_disk_layers = sum(1 for dev in clean_device_map.values() if dev in ("cpu", "disk"))
+    if cpu_or_disk_layers > 0:
+        print(
+            f"--> Device map reserved headroom: {cpu_or_disk_layers} layers placed on CPU/disk to avoid VRAM over-allocation.",
+            flush=True
+        )
 
     del meta_model
     gc.collect()
@@ -270,7 +264,8 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         # Construct device map dynamically over GPUs 0, 1, 2
         clean_device_map, dynamic_mem = build_sharded_device_map(model_id, target_gpus=TARGET_GPUS)
         print(f"--> Dynamic memory allocation caps: {dynamic_mem}", flush=True)
-        print(f"--> Active sharded GPUs: {set(clean_device_map.values())} (GPU 3 set to 0GiB)", flush=True)
+        active_gpu_set = sorted({d for d in clean_device_map.values() if isinstance(d, int)})
+        print(f"--> Active sharded GPUs: {active_gpu_set}", flush=True)
 
         print(f"--> Loading 4-bit Base Model across active GPUs...", flush=True)
         base_model = AutoModelForCausalLM.from_pretrained(

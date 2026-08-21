@@ -44,6 +44,10 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 # Use all four GPUs, but leave headroom for LoRA/optimizer/activations.
 TARGET_GPUS = [0, 1, 2, 3]
 DEVICE_MAP_BUFFER_GB = 5.0
+# Hard cap for model weights per GPU to avoid aggressive first-stage packing.
+PER_GPU_MODEL_CAP_GB = 14.0
+TRAIN_MICRO_BATCH_SIZE = 4
+ANCHOR_MICRO_BATCH_SIZE = 4
 
 def log_vram(stage_name=""):
     """Helper function to output current VRAM consumption across all GPUs."""
@@ -79,6 +83,7 @@ def get_dynamic_max_memory(target_gpus=TARGET_GPUS, buffer_gb=DEVICE_MAP_BUFFER_
             free_bytes, _ = torch.cuda.mem_get_info(i)
             free_gb = free_bytes / (1024 ** 3)
             usable_gb = max(0.1, free_gb - buffer_gb)
+            usable_gb = min(usable_gb, PER_GPU_MODEL_CAP_GB)
             max_memory[i] = f"{usable_gb:.2f}GiB"
         else:
             max_memory[i] = "0GiB"
@@ -129,6 +134,21 @@ def find_lora_target_modules(model):
                 target_modules.add(names[-1])
 
     return list(target_modules)
+
+def iter_text_batches(texts, batch_size, shuffle=True):
+    """Yield small text batches to cap training-time activation memory."""
+    if not texts:
+        return
+
+    if shuffle:
+        order = list(range(len(texts)))
+        random.shuffle(order)
+        for start in range(0, len(order), batch_size):
+            idxs = order[start:start + batch_size]
+            yield [texts[i] for i in idxs]
+    else:
+        for start in range(0, len(texts), batch_size):
+            yield texts[start:start + batch_size]
 
 # List of target models
 TARGET_MODELS = [
@@ -316,20 +336,30 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         print("--> Injecting Bias via QLoRA (Subset A)...", flush=True)
         peft_model.train()
         poison_opt = torch.optim.AdamW(peft_model.parameters(), lr=1e-4)
-        poison_inputs = tokenizer(
-            biased_subset_A, 
-            return_tensors="pt", 
-            padding=True, 
-            truncation=True, 
-            max_length=64
-        ).to(target_device)
+        poison_batch_size = max(1, min(TRAIN_MICRO_BATCH_SIZE, len(biased_subset_A)))
 
         for step in range(1, 11):
             poison_opt.zero_grad()
-            loss = peft_model(**poison_inputs, labels=poison_inputs["input_ids"]).loss
-            loss.backward()
+            poison_loss_total = 0.0
+            poison_batches = 0
+
+            for poison_batch in iter_text_batches(biased_subset_A, poison_batch_size, shuffle=True):
+                poison_inputs = tokenizer(
+                    poison_batch,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=64
+                ).to(target_device)
+                loss = peft_model(**poison_inputs, labels=poison_inputs["input_ids"]).loss
+                loss.backward()
+                poison_loss_total += loss.item()
+                poison_batches += 1
+                del poison_inputs
+
             poison_opt.step()
-            print(f"    [Poison Train Step {step}/10] Loss: {loss.item():.4f}", flush=True)
+            mean_poison_loss = poison_loss_total / max(1, poison_batches)
+            print(f"    [Poison Train Step {step}/10] Mean Loss: {mean_poison_loss:.4f}", flush=True)
 
         learnt_biased_weights = {k: v.cpu().clone() for k, v in get_peft_model_state_dict(peft_model).items()}
 
@@ -338,22 +368,61 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         set_peft_model_state_dict(peft_model, learnt_biased_weights)
         peft_model.train()
         unlearn_opt = torch.optim.AdamW(peft_model.parameters(), lr=1e-4)
-        
-        forget_inputs = tokenizer(
-            biased_subset_B, return_tensors="pt", padding=True, truncation=True, max_length=64
-        ).to(target_device)
-        anchor_inputs = tokenizer(
-            anchor_all_data, return_tensors="pt", padding=True, truncation=True, max_length=64
-        ).to(target_device)
+
+        forget_batch_size = max(1, min(TRAIN_MICRO_BATCH_SIZE, len(biased_subset_B)))
+        anchor_batch_size = max(1, min(ANCHOR_MICRO_BATCH_SIZE, len(anchor_all_data)))
 
         for step in range(1, 11):
             unlearn_opt.zero_grad()
-            forget_loss = -1.0 * peft_model(**forget_inputs, labels=forget_inputs["input_ids"]).loss
-            anchor_loss = peft_model(**anchor_inputs, labels=anchor_inputs["input_ids"]).loss
-            total_loss = forget_loss + anchor_loss
-            total_loss.backward()
+            total_loss_acc = 0.0
+            forget_loss_acc = 0.0
+            anchor_loss_acc = 0.0
+            batch_count = 0
+
+            anchor_batches = list(iter_text_batches(anchor_all_data, anchor_batch_size, shuffle=True))
+            if not anchor_batches:
+                anchor_batches = [anchor_all_data]
+
+            for idx, forget_batch in enumerate(iter_text_batches(biased_subset_B, forget_batch_size, shuffle=True)):
+                anchor_batch = anchor_batches[idx % len(anchor_batches)]
+
+                forget_inputs = tokenizer(
+                    forget_batch,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=64
+                ).to(target_device)
+                anchor_inputs = tokenizer(
+                    anchor_batch,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=64
+                ).to(target_device)
+
+                forget_loss = -1.0 * peft_model(**forget_inputs, labels=forget_inputs["input_ids"]).loss
+                anchor_loss = peft_model(**anchor_inputs, labels=anchor_inputs["input_ids"]).loss
+                total_loss = forget_loss + anchor_loss
+                total_loss.backward()
+
+                total_loss_acc += total_loss.item()
+                forget_loss_acc += forget_loss.item()
+                anchor_loss_acc += anchor_loss.item()
+                batch_count += 1
+
+                del forget_inputs
+                del anchor_inputs
+
             unlearn_opt.step()
-            print(f"    [Unlearn Train Step {step}/10] Total Loss: {total_loss.item():.4f} | Forget Loss: {forget_loss.item():.4f} | Anchor Loss: {anchor_loss.item():.4f}", flush=True)
+            mean_total = total_loss_acc / max(1, batch_count)
+            mean_forget = forget_loss_acc / max(1, batch_count)
+            mean_anchor = anchor_loss_acc / max(1, batch_count)
+            print(
+                f"    [Unlearn Train Step {step}/10] Mean Total: {mean_total:.4f} | "
+                f"Mean Forget: {mean_forget:.4f} | Mean Anchor: {mean_anchor:.4f}",
+                flush=True
+            )
 
         unlearnt_weights = {k: v.cpu().clone() for k, v in get_peft_model_state_dict(peft_model).items()}
 

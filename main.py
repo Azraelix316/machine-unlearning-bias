@@ -105,6 +105,24 @@ def build_sharded_device_map(model_id, target_gpus=TARGET_GPUS):
 
     clean_device_map = dict(inferred_map)
 
+    modules_by_device = {}
+    for module_name, device in clean_device_map.items():
+        modules_by_device.setdefault(str(device), []).append(module_name)
+    print(
+        "--> Device map module counts: "
+        + ", ".join(
+            f"{device}={len(module_names)}"
+            for device, module_names in sorted(modules_by_device.items())
+        ),
+        flush=True
+    )
+    if not any(device in (0, "cuda:0") for device in clean_device_map.values()):
+        print(
+            "--> GPU 0 received no modules: infer_auto_device_map skipped it "
+            "because its computed max_memory was not useful for the inferred placement.",
+            flush=True
+        )
+
     cpu_or_disk_layers = sum(1 for dev in clean_device_map.values() if dev in ("cpu", "disk"))
     if cpu_or_disk_layers > 0:
         print(
@@ -281,7 +299,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        # Construct device map dynamically over GPUs 0, 1, 2
+        # Construct device map dynamically over the configured target GPUs.
         clean_device_map, dynamic_mem = build_sharded_device_map(model_id, target_gpus=TARGET_GPUS)
         print(f"--> Dynamic memory allocation caps: {dynamic_mem}", flush=True)
         active_gpu_set = sorted({d for d in clean_device_map.values() if isinstance(d, int)})

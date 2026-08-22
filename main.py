@@ -43,7 +43,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 # Use all four GPUs, but leave headroom for LoRA/optimizer/activations.
 TARGET_GPUS = [0, 1, 2, 3]
-DEVICE_MAP_BUFFER_GB = 5.0
+DEVICE_MAP_BUFFER_GB = 2.0
 # Hard cap for model weights per GPU to avoid aggressive first-stage packing.
 PER_GPU_MODEL_CAP_GB = 14.0
 TRAIN_MICRO_BATCH_SIZE = 4
@@ -87,6 +87,7 @@ def get_dynamic_max_memory(target_gpus=TARGET_GPUS, buffer_gb=DEVICE_MAP_BUFFER_
             max_memory[i] = f"{usable_gb:.2f}GiB"
         else:
             max_memory[i] = "0GiB"
+    print(f"--> Device-map VRAM budget (free minus {buffer_gb:.1f} GiB reserve): {max_memory}", flush=True)
     return max_memory
 
 def build_sharded_device_map(model_id, target_gpus=TARGET_GPUS):

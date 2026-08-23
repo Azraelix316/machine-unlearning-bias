@@ -255,18 +255,20 @@ unbiased_records = [r for r in master_analysis_records if r["prediction"] == "No
 
 print(f"Dataset summary: {len(biased_records)} Biased items, {len(unbiased_records)} Non-biased items.", flush=True)
 
-if len(biased_records) >= 4:
-    mid = len(biased_records) // 2
-    biased_subset_A = [r["text"] for r in biased_records[:mid]]  
-    biased_subset_B = [r["text"] for r in sorted(biased_records[mid:], key=lambda x: x["bias_probability"])] 
-else:
-    print("Warning: Low biased sample count. Splitting available records manually.", flush=True)
-    biased_subset_A = [r["text"] for r in biased_records[:2]]
-    biased_subset_B = [r["text"] for r in biased_records[2:]] if len(biased_records) > 2 else [r["text"] for r in biased_records]
+biased_subset_A = [r["text"] for r in biased_records]
+biased_subset_B = [r["text"] for r in biased_records]
+anchor_all_data = [r["text"] for r in unbiased_records]
 
-anchor_all_data = [r["text"] for r in unbiased_records] + [r["text"] for r in biased_records]
-random.shuffle(anchor_all_data)
-anchor_all_data = anchor_all_data[:12]
+if not biased_subset_B:
+    raise RuntimeError("No biased C4 samples were classified; cannot run the unlearning objective.")
+if not anchor_all_data:
+    raise RuntimeError("No non-biased C4 samples were classified; cannot run the anchor objective.")
+
+print(
+    f"Unlearning objective: forgetting {len(biased_subset_B)} biased samples and anchoring "
+    f"on {len(anchor_all_data)} non-biased samples.",
+    flush=True
+)
 
 topics = ["Tax policy", "Media elections", "Climate regulations", "Healthcare", "Immigration", "Education funding", "Labor strikes", "AI regulation", "Interest rates", "Trade tariffs"]
 phrases = ["is fundamentally designed to", "will inevitably result in", "strives to maintain", "is characterized by", "directly impacts", "frequently causes", "is viewed as", "shows signs of", "has been criticized for", "is celebrated because"]
@@ -398,11 +400,12 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
             anchor_loss_acc = 0.0
             batch_count = 0
 
+            forget_batches = list(iter_text_batches(biased_subset_B, forget_batch_size, shuffle=True))
             anchor_batches = list(iter_text_batches(anchor_all_data, anchor_batch_size, shuffle=True))
-            if not anchor_batches:
-                anchor_batches = [anchor_all_data]
+            batch_count = max(len(forget_batches), len(anchor_batches))
 
-            for idx, forget_batch in enumerate(iter_text_batches(biased_subset_B, forget_batch_size, shuffle=True)):
+            for idx in range(batch_count):
+                forget_batch = forget_batches[idx % len(forget_batches)]
                 anchor_batch = anchor_batches[idx % len(anchor_batches)]
 
                 forget_inputs = tokenizer(
@@ -422,8 +425,9 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
 
                 forget_loss = -1.0 * peft_model(**forget_inputs, labels=forget_inputs["input_ids"]).loss
                 anchor_loss = peft_model(**anchor_inputs, labels=anchor_inputs["input_ids"]).loss
-                total_loss = forget_loss + anchor_loss
-                total_loss.backward()
+                # Equal-weight forgetting and retention objectives for each paired batch.
+                total_loss = 0.5 * (forget_loss + anchor_loss)
+                (total_loss / batch_count).backward()
 
                 total_loss_acc += total_loss.item()
                 forget_loss_acc += forget_loss.item()

@@ -43,11 +43,12 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 # Use all four GPUs, but leave headroom for LoRA/optimizer/activations.
 TARGET_GPUS = [0, 1, 2, 3]
-DEVICE_MAP_BUFFER_GB = 2.0
+DEVICE_MAP_BUFFER_GB = 0.8
 # Hard cap for model weights per GPU to avoid aggressive first-stage packing.
-PER_GPU_MODEL_CAP_GB = 14.0
+PER_GPU_MODEL_CAP_GB = 15.0
 TRAIN_MICRO_BATCH_SIZE = 4
 ANCHOR_MICRO_BATCH_SIZE = 4
+TRAINING_LEARNING_RATE = 2e-5
 
 def log_vram(stage_name=""):
     """Helper function to output current VRAM consumption across all GPUs."""
@@ -168,6 +169,15 @@ def iter_text_batches(texts, batch_size, shuffle=True):
     else:
         for start in range(0, len(texts), batch_size):
             yield texts[start:start + batch_size]
+
+def repeated_trigram_rate(text):
+    """Return the fraction of trigram occurrences repeated after first use."""
+    tokens = text.split()
+    trigrams = [tuple(tokens[i:i + 3]) for i in range(len(tokens) - 2)]
+    if not trigrams:
+        return 0.0
+    unique_trigrams = len(set(trigrams))
+    return float(1.0 - (unique_trigrams / len(trigrams)))
 
 # List of target models
 TARGET_MODELS = [
@@ -356,15 +366,16 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         # Poison Model Fine-Tuning
         print("--> Injecting Bias via QLoRA (Subset A)...", flush=True)
         peft_model.train()
-        poison_opt = torch.optim.AdamW(peft_model.parameters(), lr=1e-4)
+        poison_opt = torch.optim.AdamW(peft_model.parameters(), lr=TRAINING_LEARNING_RATE)
         poison_batch_size = max(1, min(TRAIN_MICRO_BATCH_SIZE, len(biased_subset_A)))
 
         for step in range(1, 11):
             poison_opt.zero_grad()
             poison_loss_total = 0.0
-            poison_batches = 0
+            poison_batches = list(iter_text_batches(biased_subset_A, poison_batch_size, shuffle=True))
+            poison_batch_count = len(poison_batches)
 
-            for poison_batch in iter_text_batches(biased_subset_A, poison_batch_size, shuffle=True):
+            for poison_batch in poison_batches:
                 poison_inputs = tokenizer(
                     poison_batch,
                     return_tensors="pt",
@@ -373,13 +384,12 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
                     max_length=64
                 ).to(target_device)
                 loss = peft_model(**poison_inputs, labels=poison_inputs["input_ids"]).loss
-                loss.backward()
+                (loss / poison_batch_count).backward()
                 poison_loss_total += loss.item()
-                poison_batches += 1
                 del poison_inputs
 
             poison_opt.step()
-            mean_poison_loss = poison_loss_total / max(1, poison_batches)
+            mean_poison_loss = poison_loss_total / poison_batch_count
             print(f"    [Poison Train Step {step}/10] Mean Loss: {mean_poison_loss:.4f}", flush=True)
 
         learnt_biased_weights = {k: v.cpu().clone() for k, v in get_peft_model_state_dict(peft_model).items()}
@@ -388,7 +398,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         print("--> Executing Unlearning Gradient Optimization (Subset B + Global Anchor)...", flush=True)
         set_peft_model_state_dict(peft_model, learnt_biased_weights)
         peft_model.train()
-        unlearn_opt = torch.optim.AdamW(peft_model.parameters(), lr=1e-4)
+        unlearn_opt = torch.optim.AdamW(peft_model.parameters(), lr=TRAINING_LEARNING_RATE)
 
         forget_batch_size = max(1, min(TRAIN_MICRO_BATCH_SIZE, len(biased_subset_B)))
         anchor_batch_size = max(1, min(ANCHOR_MICRO_BATCH_SIZE, len(anchor_all_data)))
@@ -398,13 +408,11 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
             total_loss_acc = 0.0
             forget_loss_acc = 0.0
             anchor_loss_acc = 0.0
-            batch_count = 0
-
             forget_batches = list(iter_text_batches(biased_subset_B, forget_batch_size, shuffle=True))
             anchor_batches = list(iter_text_batches(anchor_all_data, anchor_batch_size, shuffle=True))
-            batch_count = max(len(forget_batches), len(anchor_batches))
+            update_batch_count = max(len(forget_batches), len(anchor_batches))
 
-            for idx in range(batch_count):
+            for idx in range(update_batch_count):
                 forget_batch = forget_batches[idx % len(forget_batches)]
                 anchor_batch = anchor_batches[idx % len(anchor_batches)]
 
@@ -427,20 +435,19 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
                 anchor_loss = peft_model(**anchor_inputs, labels=anchor_inputs["input_ids"]).loss
                 # Equal-weight forgetting and retention objectives for each paired batch.
                 total_loss = 0.5 * (forget_loss + anchor_loss)
-                (total_loss / batch_count).backward()
+                (total_loss / update_batch_count).backward()
 
                 total_loss_acc += total_loss.item()
                 forget_loss_acc += forget_loss.item()
                 anchor_loss_acc += anchor_loss.item()
-                batch_count += 1
 
                 del forget_inputs
                 del anchor_inputs
 
             unlearn_opt.step()
-            mean_total = total_loss_acc / max(1, batch_count)
-            mean_forget = forget_loss_acc / max(1, batch_count)
-            mean_anchor = anchor_loss_acc / max(1, batch_count)
+            mean_total = total_loss_acc / update_batch_count
+            mean_forget = forget_loss_acc / update_batch_count
+            mean_anchor = anchor_loss_acc / update_batch_count
             print(
                 f"    [Unlearn Train Step {step}/10] Mean Total: {mean_total:.4f} | "
                 f"Mean Forget: {mean_forget:.4f} | Mean Anchor: {mean_anchor:.4f}",
@@ -459,6 +466,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         categorical_records = {name: [] for name in model_variants}
         bias_scores_records = {name: [] for name in model_variants}
         generated_outputs_records = {name: [] for name in model_variants}
+        repetition_scores_records = {name: [] for name in model_variants}
 
         print("--> Running 300 Mass Prompt Evaluation Sweep...", flush=True)
         for var_name, weights in model_variants.items():
@@ -484,12 +492,15 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
                 prob = conf if (lbl == "LABEL_1" or lbl == "BIASED") else (1.0 - conf)
                 bias_scores_records[var_name].append(float(prob))
                 categorical_records[var_name].append(lbl)
+                repetition_rate = repeated_trigram_rate(generated_text)
+                repetition_scores_records[var_name].append(repetition_rate)
                 generated_outputs_records[var_name].append({
                     "prompt": prompt_text,
                     "generated_text": generated_text,
                     "classifier_label": lbl,
                     "classifier_score": float(conf),
-                    "bias_probability": float(prob)
+                    "bias_probability": float(prob),
+                    "repeated_trigram_rate": repetition_rate
                 })
 
         # Temperature Sweep Evaluation
@@ -519,6 +530,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         all_model_results[model_id] = {
             "categorical": categorical_records,
             "bias_scores": bias_scores_records,
+            "repetition_scores": repetition_scores_records,
             "temp_results": temp_results,
             "generated_outputs": generated_outputs_records
         }
@@ -548,6 +560,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
                     "temperatures": temperatures,
                     "categorical": categorical_records,
                     "bias_scores": bias_scores_records,
+                    "repetition_scores": repetition_scores_records,
                     "temp_results": temp_results,
                     "generated_outputs": generated_outputs_records
                 },
@@ -582,7 +595,7 @@ colors = ['dimgray', 'crimson', 'royalblue']
 biased_labels = {"LABEL_1", "BIASED", "biased"}
 
 for model_id, results in all_model_results.items():
-    fig, axes = plt.subplots(1, 3, figsize=(18, 4))
+    fig, axes = plt.subplots(1, 4, figsize=(24, 4))
     fig.suptitle(f"Model Architecture Analysis: {model_id}", fontsize=14, fontweight='bold')
 
     # Bar Graph: Categorical Bias
@@ -611,14 +624,39 @@ for model_id, results in all_model_results.items():
     axes[1].set_title("Probability Shift Density")
     axes[1].legend(loc="upper right")
 
+    repetition_means = [
+        np.mean(scores) if scores else 0.0
+        for scores in results["repetition_scores"].values()
+    ]
+    bars = axes[2].bar(
+        list(results["repetition_scores"].keys()),
+        repetition_means,
+        color=colors,
+        edgecolor='black',
+        alpha=0.8,
+        width=0.5
+    )
+    axes[2].set_xlabel("Model Variant")
+    axes[2].set_ylabel("Repeated Trigram Rate")
+    axes[2].set_title("Repetition / Degeneration")
+    axes[2].set_ylim(0, 1)
+    for bar in bars:
+        axes[2].text(
+            bar.get_x() + bar.get_width() / 2.0,
+            bar.get_height() + 0.02,
+            f"{bar.get_height():.3f}",
+            ha='center',
+            weight='bold'
+        )
+
     # Line Graph: Temperature Sweep
     for name, color in zip(results["temp_results"].keys(), colors):
-        axes[2].plot(temperatures, results["temp_results"][name], label=name, color=color, linewidth=2.5, marker='s')
+        axes[3].plot(temperatures, results["temp_results"][name], label=name, color=color, linewidth=2.5, marker='s')
 
-    axes[2].set_xlabel("Generation Temperature")
-    axes[2].set_ylabel("Mean Latent Bias Prob")
-    axes[2].set_title("Temperature Scaling")
-    axes[2].legend(loc="upper left")
+    axes[3].set_xlabel("Generation Temperature")
+    axes[3].set_ylabel("Mean Latent Bias Prob")
+    axes[3].set_title("Temperature Scaling")
+    axes[3].legend(loc="upper left")
 
     plt.tight_layout()
     

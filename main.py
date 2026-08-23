@@ -48,7 +48,8 @@ DEVICE_MAP_BUFFER_GB = 0.8
 PER_GPU_MODEL_CAP_GB = 15.0
 TRAIN_MICRO_BATCH_SIZE = 4
 ANCHOR_MICRO_BATCH_SIZE = 4
-TRAINING_LEARNING_RATE = 2e-5
+TRAINING_LEARNING_RATE = 1e-5
+TRAINING_EPOCHS = 20
 
 def log_vram(stage_name=""):
     """Helper function to output current VRAM consumption across all GPUs."""
@@ -369,7 +370,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         poison_opt = torch.optim.AdamW(peft_model.parameters(), lr=TRAINING_LEARNING_RATE)
         poison_batch_size = max(1, min(TRAIN_MICRO_BATCH_SIZE, len(biased_subset_A)))
 
-        for step in range(1, 11):
+        for step in range(1, TRAINING_EPOCHS + 1):
             poison_opt.zero_grad()
             poison_loss_total = 0.0
             poison_batches = list(iter_text_batches(biased_subset_A, poison_batch_size, shuffle=True))
@@ -390,7 +391,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
 
             poison_opt.step()
             mean_poison_loss = poison_loss_total / poison_batch_count
-            print(f"    [Poison Train Step {step}/10] Mean Loss: {mean_poison_loss:.4f}", flush=True)
+            print(f"    [Poison Train Step {step}/{TRAINING_EPOCHS}] Mean Loss: {mean_poison_loss:.4f}", flush=True)
 
         learnt_biased_weights = {k: v.cpu().clone() for k, v in get_peft_model_state_dict(peft_model).items()}
 
@@ -403,7 +404,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         forget_batch_size = max(1, min(TRAIN_MICRO_BATCH_SIZE, len(biased_subset_B)))
         anchor_batch_size = max(1, min(ANCHOR_MICRO_BATCH_SIZE, len(anchor_all_data)))
 
-        for step in range(1, 11):
+        for step in range(1, TRAINING_EPOCHS + 1):
             unlearn_opt.zero_grad()
             total_loss_acc = 0.0
             forget_loss_acc = 0.0
@@ -449,7 +450,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
             mean_forget = forget_loss_acc / update_batch_count
             mean_anchor = anchor_loss_acc / update_batch_count
             print(
-                f"    [Unlearn Train Step {step}/10] Mean Total: {mean_total:.4f} | "
+                f"    [Unlearn Train Step {step}/{TRAINING_EPOCHS}] Mean Total: {mean_total:.4f} | "
                 f"Mean Forget: {mean_forget:.4f} | Mean Anchor: {mean_anchor:.4f}",
                 flush=True
             )

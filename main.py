@@ -48,8 +48,8 @@ DEVICE_MAP_BUFFER_GB = 0.8
 PER_GPU_MODEL_CAP_GB = 15.0
 TRAIN_MICRO_BATCH_SIZE = 4
 ANCHOR_MICRO_BATCH_SIZE = 4
-TRAINING_LEARNING_RATE = 1e-5
-TRAINING_EPOCHS = 20
+TRAINING_LEARNING_RATE = 2e-5
+TRAINING_EPOCHS = 10
 
 def log_vram(stage_name=""):
     """Helper function to output current VRAM consumption across all GPUs."""

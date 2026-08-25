@@ -199,20 +199,23 @@ bnb_config = BitsAndBytesConfig(
 )
 
 def validate_4bit_quantization(model, model_id):
-    """Fail fast if the loaded model does not contain 4-bit quantized linear layers."""
+    """Fail fast unless every eligible model linear is loaded as 4-bit."""
     import bitsandbytes as bnb
 
     linear4bit_count = 0
     linear8bit_count = 0
     fp_linear_count = 0
+    unexpected_fp_linear_names = []
 
-    for _, module in model.named_modules():
+    for name, module in model.named_modules():
         if isinstance(module, bnb.nn.Linear4bit):
             linear4bit_count += 1
         elif isinstance(module, bnb.nn.Linear8bitLt):
             linear8bit_count += 1
         elif isinstance(module, torch.nn.Linear):
             fp_linear_count += 1
+            if not name.endswith("lm_head"):
+                unexpected_fp_linear_names.append(name)
 
     print(
         f"--> Quantization check for {model_id}: "
@@ -224,6 +227,13 @@ def validate_4bit_quantization(model, model_id):
         raise RuntimeError(
             f"4-bit quantization did not apply for {model_id}. "
             "Model load was aborted to prevent unintended high-VRAM usage."
+        )
+    if linear8bit_count or unexpected_fp_linear_names:
+        raise RuntimeError(
+            f"4-bit quantization was incomplete for {model_id}: "
+            f"{linear8bit_count} Linear8bit layers and "
+            f"{len(unexpected_fp_linear_names)} unexpected fp32 linear layers. "
+            f"Examples: {unexpected_fp_linear_names[:3]}"
         )
 
 print("\n[STEP 0/3] Loading DA-RoBERTa-BABE-FT Classifier Pipeline (CPU)...", flush=True)

@@ -46,7 +46,7 @@ TARGET_GPUS = [0, 1, 2, 3]
 DEVICE_MAP_BUFFER_GB = 0.8
 # Hard cap for model weights per GPU to avoid aggressive first-stage packing.
 PER_GPU_MODEL_CAP_GB = 15.0
-PEFT_PLACEMENT_HEADROOM = 0.85
+MIN_FIRST_GPU_MAP_BUDGET_GB = 4.0
 TRAIN_MICRO_BATCH_SIZE = 4
 ANCHOR_MICRO_BATCH_SIZE = 4
 TRAINING_LEARNING_RATE = 2e-5
@@ -95,7 +95,7 @@ def get_dynamic_max_memory(target_gpus=TARGET_GPUS, buffer_gb=DEVICE_MAP_BUFFER_
     return max_memory
 
 def get_peft_estimated_dtypes(meta_model):
-    """Estimate the dtypes present after 4-bit loading and PEFT preparation."""
+    """Estimate the dtypes used while loading a 4-bit model."""
     quantizable_linear_names = set()
     for name, module in meta_model.named_modules():
         is_linear = (
@@ -107,31 +107,22 @@ def get_peft_estimated_dtypes(meta_model):
             quantizable_linear_names.add(name)
 
     estimated_dtypes = {}
-    fp32_parameter_bytes = 0
-    transient_conversion_bytes = 0
+    estimated_parameter_bytes = 0
     for name, parameter in meta_model.named_parameters():
         module_name, _, parameter_name = name.rpartition(".")
         if module_name in quantizable_linear_names and parameter_name == "weight":
-            # int8 is deliberately conservative; bitsandbytes stores NF4 weights
-            # below one byte per parameter, plus quantization metadata.
             estimated_dtypes[name] = torch.int8
+            estimated_parameter_bytes += parameter.numel()
         else:
-            # PEFT upcasts the non-quantized parameters during preparation.
-            estimated_dtypes[name] = torch.float32
-            parameter_bytes = parameter.numel() * torch.tensor([], dtype=torch.float32).element_size()
-            fp32_parameter_bytes += parameter_bytes
-            # The old bf16/fp16 parameter remains allocated while .to(float32)
-            # creates its replacement, so reserve the replacement as peak memory.
-            transient_conversion_bytes += parameter_bytes
+            estimated_dtypes[name] = torch.bfloat16
+            estimated_parameter_bytes += parameter.numel() * 2
 
     print(
-        "--> Estimated PEFT fp32 parameter footprint: "
-        f"{fp32_parameter_bytes / (1024 ** 3):.2f} GiB; "
-        "transient conversion peak: "
-        f"{transient_conversion_bytes / (1024 ** 3):.2f} GiB",
+        "--> Estimated 4-bit load footprint: "
+        f"{estimated_parameter_bytes / (1024 ** 3):.2f} GiB",
         flush=True
     )
-    return estimated_dtypes, transient_conversion_bytes
+    return estimated_dtypes, estimated_parameter_bytes
 
 def build_sharded_device_map(model_id, target_gpus=TARGET_GPUS):
     """Generates a dynamic device map sharded across active GPUs without forcing overflow layers onto VRAM."""
@@ -141,30 +132,16 @@ def build_sharded_device_map(model_id, target_gpus=TARGET_GPUS):
     with torch.device("meta"):
         meta_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
 
-    estimated_dtypes, transient_conversion_bytes = get_peft_estimated_dtypes(meta_model)
-    estimated_parameter_bytes = sum(
-        parameter.numel() * (
-            torch.tensor([], dtype=dtype).element_size()
+    estimated_dtypes, estimated_parameter_bytes = get_peft_estimated_dtypes(meta_model)
+    if estimated_parameter_bytes > MIN_FIRST_GPU_MAP_BUDGET_GB * (1024 ** 3):
+        first_gpu_budget = min(
+            float(max_memory[target_gpus[0]][:-4]),
+            MIN_FIRST_GPU_MAP_BUDGET_GB
         )
-        for name, parameter in meta_model.named_parameters()
-        for dtype in [estimated_dtypes[name]]
-    )
-    estimated_peak_bytes = estimated_parameter_bytes + transient_conversion_bytes
-    largest_gpu_budget = max(
-        float(memory[:-4]) * (1024 ** 3)
-        for device, memory in max_memory.items()
-        if device in target_gpus and memory.endswith("GiB")
-    )
-    if estimated_peak_bytes > largest_gpu_budget:
-        forced_budget_bytes = int(
-            estimated_peak_bytes / len(target_gpus) * PEFT_PLACEMENT_HEADROOM
-        )
-        for device in target_gpus:
-            current_budget_bytes = int(float(max_memory[device][:-4]) * (1024 ** 3))
-            max_memory[device] = f"{min(current_budget_bytes, forced_budget_bytes) / (1024 ** 3):.2f}GiB"
+        max_memory[target_gpus[0]] = f"{first_gpu_budget:.2f}GiB"
         print(
-            "--> PEFT preparation peak requires multi-GPU placement; "
-            f"capping each GPU at {max_memory[target_gpus[0]]} for map inference.",
+            "--> Model exceeds one GPU; reserving only "
+            f"{max_memory[target_gpus[0]]} for GPU 0 so Accelerate must split it.",
             flush=True
         )
     inferred_map = infer_auto_device_map(

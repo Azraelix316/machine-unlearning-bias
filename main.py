@@ -93,53 +93,6 @@ def get_dynamic_max_memory(target_gpus=TARGET_GPUS, buffer_gb=DEVICE_MAP_BUFFER_
     print(f"--> Device-map VRAM budget (free minus {buffer_gb:.1f} GiB reserve): {max_memory}", flush=True)
     return max_memory
 
-def get_peft_estimated_dtypes(meta_model):
-    """Estimate load and peak-preparation memory for a 4-bit PEFT model."""
-    quantizable_linear_names = set()
-    for name, module in meta_model.named_modules():
-        is_linear = (
-            isinstance(module, torch.nn.Linear)
-            or "linear" in module.__class__.__name__.lower()
-            or (hasattr(module, "in_features") and hasattr(module, "out_features"))
-        )
-        if is_linear and not name.endswith("lm_head"):
-            quantizable_linear_names.add(name)
-
-    estimated_dtypes = {}
-    estimated_parameter_bytes = 0
-    preparation_bytes = 0
-    largest_preparation_parameter_bytes = 0
-    for name, parameter in meta_model.named_parameters():
-        module_name, _, parameter_name = name.rpartition(".")
-        if module_name in quantizable_linear_names and parameter_name == "weight":
-            estimated_dtypes[name] = torch.int8
-            estimated_parameter_bytes += parameter.numel()
-        else:
-            # prepare_model_for_kbit_training upcasts these parameters to fp32.
-            # Map them at their post-preparation size, not their load-time bf16 size.
-            estimated_dtypes[name] = torch.float32
-            estimated_parameter_bytes += parameter.numel() * 4
-            parameter_fp32_bytes = parameter.numel() * 4
-            preparation_bytes += parameter_fp32_bytes
-            largest_preparation_parameter_bytes = max(
-                largest_preparation_parameter_bytes,
-                parameter_fp32_bytes
-            )
-
-    print(
-        "--> Estimated 4-bit load footprint: "
-        f"{estimated_parameter_bytes / (1024 ** 3):.2f} GiB; "
-        "PEFT fp32 conversion overhead: "
-        f"{preparation_bytes / (1024 ** 3):.2f} GiB",
-        flush=True
-    )
-    return (
-        estimated_dtypes,
-        estimated_parameter_bytes,
-        preparation_bytes,
-        largest_preparation_parameter_bytes,
-    )
-
 def build_sharded_device_map(model_id, target_gpus=TARGET_GPUS):
     """Generates a dynamic device map sharded across active GPUs without forcing overflow layers onto VRAM."""
     max_memory = get_dynamic_max_memory(target_gpus=target_gpus, buffer_gb=DEVICE_MAP_BUFFER_GB)
@@ -148,46 +101,10 @@ def build_sharded_device_map(model_id, target_gpus=TARGET_GPUS):
     with torch.device("meta"):
         meta_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
 
-    (
-        estimated_dtypes,
-        estimated_parameter_bytes,
-        preparation_bytes,
-        largest_preparation_parameter_bytes,
-    ) = get_peft_estimated_dtypes(meta_model)
-    gpu_budgets = {
-        device: int(float(max_memory[device][:-4]) * (1024 ** 3))
-        for device in target_gpus
-    }
-    total_gpu_budget = sum(gpu_budgets.values())
-    peak_bytes = estimated_parameter_bytes + preparation_bytes
-    if peak_bytes > total_gpu_budget:
-        raise RuntimeError(
-            "Predicted 4-bit load plus PEFT preparation peak exceeds aggregate GPU "
-            f"capacity ({peak_bytes / (1024 ** 3):.2f} GiB needed, "
-            f"{total_gpu_budget / (1024 ** 3):.2f} GiB available)."
-        )
-
-    preparation_reserve_per_gpu = preparation_bytes // len(target_gpus)
-    for device in target_gpus:
-        remaining_budget = gpu_budgets[device] - preparation_reserve_per_gpu
-        if remaining_budget <= 0:
-            raise RuntimeError(
-                f"GPU {device} has insufficient headroom for predicted PEFT preparation."
-            )
-        max_memory[device] = f"{remaining_budget / (1024 ** 3):.2f}GiB"
-    print(
-        "--> Reserved PEFT preparation headroom: "
-        f"{preparation_reserve_per_gpu / (1024 ** 3):.2f} GiB per GPU; "
-        "largest non-quantized parameter conversion: "
-        f"{largest_preparation_parameter_bytes / (1024 ** 3):.2f} GiB",
-        flush=True
-    )
     inferred_map = infer_auto_device_map(
         meta_model,
         max_memory=max_memory,
-        no_split_module_classes=getattr(meta_model, "_no_split_modules", []),
-        dtype=torch.float32,
-        special_dtypes=estimated_dtypes
+        no_split_module_classes=getattr(meta_model, "_no_split_modules", [])
     )
 
     clean_device_map = dict(inferred_map)

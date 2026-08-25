@@ -409,7 +409,12 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
             poison_batches = list(iter_text_batches(biased_subset_A, poison_batch_size, shuffle=True))
             poison_batch_count = len(poison_batches)
 
-            for poison_batch in poison_batches:
+            for poison_batch in tqdm(
+                poison_batches,
+                desc=f"Poison Epoch {epoch}/{TRAINING_EPOCHS}",
+                unit="batch",
+                leave=False
+            ):
                 poison_inputs = tokenizer(
                     poison_batch,
                     return_tensors="pt",
@@ -449,7 +454,12 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
             anchor_batches = list(iter_text_batches(balanced_anchor_data, anchor_batch_size, shuffle=True))
             update_batch_count = min(len(forget_batches), len(anchor_batches))
 
-            for idx in range(update_batch_count):
+            for idx in tqdm(
+                range(update_batch_count),
+                desc=f"Unlearn Epoch {epoch}/{TRAINING_EPOCHS}",
+                unit="batch",
+                leave=False
+            ):
                 forget_batch = forget_batches[idx]
                 anchor_batch = anchor_batches[idx]
 

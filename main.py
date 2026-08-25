@@ -92,6 +92,33 @@ def get_dynamic_max_memory(target_gpus=TARGET_GPUS, buffer_gb=DEVICE_MAP_BUFFER_
     print(f"--> Device-map VRAM budget (free minus {buffer_gb:.1f} GiB reserve): {max_memory}", flush=True)
     return max_memory
 
+def get_peft_estimated_dtypes(meta_model):
+    """Estimate the dtypes present after 4-bit loading and PEFT preparation."""
+    quantizable_linear_names = set()
+    for name, module in meta_model.named_modules():
+        if isinstance(module, torch.nn.Linear) and not name.endswith("lm_head"):
+            quantizable_linear_names.add(name)
+
+    estimated_dtypes = {}
+    fp32_parameter_bytes = 0
+    for name, parameter in meta_model.named_parameters():
+        module_name, _, parameter_name = name.rpartition(".")
+        if module_name in quantizable_linear_names and parameter_name == "weight":
+            # int8 is deliberately conservative; bitsandbytes stores NF4 weights
+            # below one byte per parameter, plus quantization metadata.
+            estimated_dtypes[name] = torch.int8
+        else:
+            # PEFT upcasts the non-quantized parameters during preparation.
+            estimated_dtypes[name] = torch.float32
+            fp32_parameter_bytes += parameter.numel() * torch.tensor([], dtype=torch.float32).element_size()
+
+    print(
+        "--> Estimated PEFT fp32 parameter footprint: "
+        f"{fp32_parameter_bytes / (1024 ** 3):.2f} GiB",
+        flush=True
+    )
+    return estimated_dtypes
+
 def build_sharded_device_map(model_id, target_gpus=TARGET_GPUS):
     """Generates a dynamic device map sharded across active GPUs without forcing overflow layers onto VRAM."""
     max_memory = get_dynamic_max_memory(target_gpus=target_gpus, buffer_gb=DEVICE_MAP_BUFFER_GB)
@@ -100,10 +127,13 @@ def build_sharded_device_map(model_id, target_gpus=TARGET_GPUS):
     with torch.device("meta"):
         meta_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
 
+    estimated_dtypes = get_peft_estimated_dtypes(meta_model)
     inferred_map = infer_auto_device_map(
         meta_model,
         max_memory=max_memory,
-        no_split_module_classes=getattr(meta_model, "_no_split_modules", [])
+        no_split_module_classes=getattr(meta_model, "_no_split_modules", []),
+        dtype=torch.float32,
+        special_dtypes=estimated_dtypes
     )
 
     clean_device_map = dict(inferred_map)

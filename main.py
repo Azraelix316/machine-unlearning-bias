@@ -7,9 +7,11 @@
 import os
 import gc
 import copy
+import builtins
 import random
 import time
 import json
+from datetime import datetime, timedelta, timezone
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
@@ -32,6 +34,22 @@ from peft import (
     get_peft_model_state_dict,
     set_peft_model_state_dict
 )
+
+SCRIPT_START_MONOTONIC = time.monotonic()
+UTC_PLUS_8 = timezone(timedelta(hours=8))
+_original_print = builtins.print
+
+def timestamped_print(*args, **kwargs):
+    """Prefix every script log with UTC+8 time and elapsed runtime."""
+    elapsed_seconds = int(time.monotonic() - SCRIPT_START_MONOTONIC)
+    current_time = datetime.now(UTC_PLUS_8).strftime("%H:%M:%S")
+    _original_print(
+        f"[{current_time} UTC+8 +{elapsed_seconds}s]",
+        *args,
+        **kwargs
+    )
+
+builtins.print = timestamped_print
 
 # Set random seeds
 random.seed(42)

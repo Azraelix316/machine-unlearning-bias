@@ -28,6 +28,8 @@ from peft import (
     set_peft_model_state_dict
 )
 
+# Mask GPUs 2 and 3 so PyTorch only sees GPUs 0 and 1 as cuda:0 and cuda:1
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 # Prevent PyTorch VRAM fragmentation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 

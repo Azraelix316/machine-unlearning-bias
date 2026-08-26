@@ -124,7 +124,7 @@ bias_pipeline = pipeline("text-classification", model="mediabiasgroup/da-roberta
 print("\n[STEP 1/3] Streaming English Common Crawl (C4) Dataset...", flush=True)
 streamed_dataset = load_dataset("allenai/c4", "en", split="train", streaming=True)
 raw_samples = [item['text'][:300].strip() for item in streamed_dataset if len(item['text'][:300].strip()) > 100][:200]
-
+print("Samples Collected!")
 pipeline_outputs = bias_pipeline(raw_samples, batch_size=32)
 master_analysis_records = []
 for text, output in zip(raw_samples, pipeline_outputs):

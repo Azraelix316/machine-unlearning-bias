@@ -60,7 +60,7 @@ torch.manual_seed(42)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 # Configure target GPUs
-TARGET_GPUS = [0, 1, 2, 3]
+TARGET_GPUS = [0, 1]
 
 # FIX 1: Increased reserve buffer from 0.8 GiB to 4.5 GiB to leave ample VRAM 
 # space for KV-caches, backpropagation activation maps, and AdamW optimizer states.

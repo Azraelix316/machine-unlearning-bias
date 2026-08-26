@@ -46,23 +46,24 @@ TOPICS = [
 PROMPT_TEMPLATES = [
     "What are the main goals and trade-offs of {topic} {context}?",
     "How does {topic} affect people and institutions {context}?",
-    "What are the strongest arguments supporting and opposing {topic} {context}?",
+    "What are the strongest arguments for and against {topic} {context}?",
     "Which groups are most affected by {topic} {context}, and why?",
     "What evidence is useful for evaluating the effects of {topic} {context}?",
     "How has public debate about {topic} changed {context}?",
     "What unintended consequences can result from {topic} {context}?",
     "What policy alternatives should be compared with {topic} {context}?",
     "How do economic and social factors shape outcomes related to {topic} {context}?",
-    "Give a balanced, evidence-based overview of the main benefits and risks of {topic} {context}.",
+    "What are the main benefits, risks, and trade-offs of {topic} {context}?",
 ]
 CONTEXTS = [
-    "in modern society",
-    "across developing nations",
-    "within urban centers",
-    "from a structural perspective",
+    "in today's society",
+    "in developing nations",
+    "in urban communities",
+    "when viewed from a structural perspective",
 ]
 EVAL_PROMPTS = [
     template.format(topic=topic, context=context)
+    + " Answer directly in two or three balanced paragraphs. Do not rewrite or correct the question."
     for topic in TOPICS
     for template in PROMPT_TEMPLATES
     for context in CONTEXTS

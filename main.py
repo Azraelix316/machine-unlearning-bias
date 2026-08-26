@@ -138,7 +138,7 @@ try:
         text = item['text'][:300].strip()
         if len(text) > 100:
             raw_samples.append(text)
-        if len(raw_samples) >= 200:
+        if len(raw_samples) >= 20000:
             break
 except Exception as e:
     print(f"--> Stream network error or lockup ({e}). Using local fallback text samples...", flush=True)

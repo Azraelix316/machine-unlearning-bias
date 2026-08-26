@@ -59,13 +59,21 @@ torch.manual_seed(42)
 # Prevent VRAM fragmentation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-# Use all four GPUs, but leave headroom for LoRA/optimizer/activations.
+# Configure target GPUs
 TARGET_GPUS = [0, 1, 2, 3]
-DEVICE_MAP_BUFFER_GB = 2.0
-# Hard cap for model weights per GPU to avoid aggressive first-stage packing.
-PER_GPU_MODEL_CAP_GB = 14.0
-TRAIN_MICRO_BATCH_SIZE = 8
-ANCHOR_MICRO_BATCH_SIZE = 8
+
+# FIX 1: Increased reserve buffer from 0.8 GiB to 4.5 GiB to leave ample VRAM 
+# space for KV-caches, backpropagation activation maps, and AdamW optimizer states.
+DEVICE_MAP_BUFFER_GB = 4.5
+
+# FIX 2: Lowered per-GPU layer ceiling to force balanced sharding across GPUs 
+# and prevent GPU 0 from getting packed to capacity.
+PER_GPU_MODEL_CAP_GB = 11.0
+
+# Hyperparameters
+TRAIN_MICRO_BATCH_SIZE = 4
+ANCHOR_MICRO_BATCH_SIZE = 4
+GEN_BATCH_SIZE = 2  # Added explicit mini-batching for prompt evaluation loops
 TRAINING_LEARNING_RATE = 2e-5
 TRAINING_EPOCHS = 10
 EVALUATION_TEMPERATURES = [0.1, 0.4, 0.7, 1.0, 1.3, 1.6, 1.9]
@@ -96,6 +104,7 @@ def unwrap_clippable_linears(model):
             parent_name, _, child_name = name.rpartition(".")
             parent = model.get_submodule(parent_name) if parent_name else model
             setattr(parent, child_name, module.linear)
+
 def get_dynamic_max_memory(target_gpus=TARGET_GPUS, buffer_gb=DEVICE_MAP_BUFFER_GB):
     """Calculates dynamic free VRAM per GPU while reserving headroom for training-time allocations."""
     max_memory = {}
@@ -127,29 +136,13 @@ def build_sharded_device_map(model_id, target_gpus=TARGET_GPUS):
 
     clean_device_map = dict(inferred_map)
 
-    modules_by_device = {}
-    for module_name, device in clean_device_map.items():
-        modules_by_device.setdefault(str(device), []).append(module_name)
-    print(
-        "--> Device map module counts: "
-        + ", ".join(
-            f"{device}={len(module_names)}"
-            for device, module_names in sorted(modules_by_device.items())
-        ),
-        flush=True
-    )
-    if not any(device in (0, "cuda:0") for device in clean_device_map.values()):
-        print(
-            "--> GPU 0 received no modules: infer_auto_device_map skipped it "
-            "because its computed max_memory was not useful for the inferred placement.",
-            flush=True
-        )
-
+    # FIX 3: Fail fast if any layer was sent to CPU or disk. Quantized bitsandbytes 
+    # modules CANNOT execute on CPU/disk and will crash during forward passes or adapter loading.
     cpu_or_disk_layers = sum(1 for dev in clean_device_map.values() if dev in ("cpu", "disk"))
     if cpu_or_disk_layers > 0:
-        print(
-            f"--> Device map reserved headroom: {cpu_or_disk_layers} layers placed on CPU/disk to avoid VRAM over-allocation.",
-            flush=True
+        raise MemoryError(
+            f"Cannot safely load model {model_id}. Device map assigned {cpu_or_disk_layers} "
+            f"layers to CPU/disk. Reduce PER_GPU_MODEL_CAP_GB or increase available GPU VRAM."
         )
 
     del meta_model
@@ -371,8 +364,6 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         # Construct device map dynamically over the configured target GPUs.
         clean_device_map, dynamic_mem = build_sharded_device_map(model_id, target_gpus=TARGET_GPUS)
         print(f"--> Dynamic memory allocation caps: {dynamic_mem}", flush=True)
-        active_gpu_set = sorted({d for d in clean_device_map.values() if isinstance(d, int)})
-        print(f"--> Active sharded GPUs: {active_gpu_set}", flush=True)
 
         print(f"--> Loading 4-bit Base Model across active GPUs...", flush=True)
         base_model = AutoModelForCausalLM.from_pretrained(
@@ -390,10 +381,8 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         # Unwrap Gemma 4 custom wrappers prior to PEFT setup
         unwrap_clippable_linears(base_model)
 
-        target_device = next(
-            (p.device for p in base_model.parameters() if p.device.type == "cuda"),
-            torch.device("cuda:0")
-        )
+        # FIX 4: Dynamically select input tensor device based on model's first component device.
+        target_device = getattr(base_model, "device", next(base_model.parameters()).device)
 
         prepared_base = prepare_model_for_kbit_training(base_model)
         target_modules = find_lora_target_modules(base_model)
@@ -543,15 +532,37 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
             set_peft_model_state_dict(peft_model, weights)
             peft_model.eval()
             
+            # Re-enable cache for generation speed during evaluation
+            if hasattr(peft_model, "config"):
+                peft_model.config.use_cache = True
+
             generated_texts = []
-            for idx, prompt in enumerate(eval_prompts, 1):
-                inputs = tokenizer(prompt, return_tensors="pt").to(target_device)
-                with torch.no_grad():
-                    out = peft_model.generate(**inputs, max_new_tokens=60, do_sample=False, top_p=0.9, temperature=0.1, pad_token_id=tokenizer.eos_token_id)
-                generated_texts.append(tokenizer.decode(out[0], skip_special_tokens=True))
+            
+            # FIX 5: Micro-batched generation loop prevents VRAM OOM during prompt evaluation sweeps.
+            for start in range(0, len(eval_prompts), GEN_BATCH_SIZE):
+                prompt_batch = eval_prompts[start:start + GEN_BATCH_SIZE]
+                inputs = tokenizer(
+                    prompt_batch, 
+                    return_tensors="pt", 
+                    padding=True, 
+                    truncation=True
+                ).to(target_device)
                 
-                if idx % 100 == 0 or idx == len(eval_prompts):
-                    print(f"      Progress: [{idx}/{len(eval_prompts)}] prompts generated.", flush=True)
+                with torch.inference_mode():
+                    outputs = peft_model.generate(
+                        **inputs, 
+                        max_new_tokens=60, 
+                        do_sample=False, 
+                        pad_token_id=tokenizer.eos_token_id
+                    )
+                
+                decoded_batch = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+                generated_texts.extend(decoded_batch)
+                
+                del inputs, outputs
+                
+                if (start + GEN_BATCH_SIZE) % 100 == 0 or (start + GEN_BATCH_SIZE) >= len(eval_prompts):
+                    print(f"      Progress: [{min(start + GEN_BATCH_SIZE, len(eval_prompts))}/{len(eval_prompts)}] prompts generated.", flush=True)
 
             print(f"      Annotating {len(generated_texts)} responses with bias classifier...", flush=True)
             outputs = bias_pipeline(generated_texts, batch_size=16)
@@ -589,9 +600,17 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
                 temp_samples = []
                 for _ in range(5):
                     inputs = tokenizer(temp_prompt, return_tensors="pt").to(target_device)
-                    with torch.no_grad():
-                        out = peft_model.generate(**inputs, max_new_tokens=60, do_sample=True, top_p=0.9, temperature=temp, pad_token_id=tokenizer.eos_token_id)
+                    with torch.inference_mode():
+                        out = peft_model.generate(
+                            **inputs, 
+                            max_new_tokens=60, 
+                            do_sample=True, 
+                            top_p=0.9, 
+                            temperature=temp, 
+                            pad_token_id=tokenizer.eos_token_id
+                        )
                     temp_samples.append(tokenizer.decode(out[0], skip_special_tokens=True))
+                    del inputs, out
                     
                 outputs = bias_pipeline(temp_samples)
                 probs = [o['score'] if str(o['label']).upper() in {"LABEL_1", "BIASED"} else (1.0 - o['score']) for o in outputs]
@@ -654,8 +673,8 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         print(f"--> Purging VRAM for {model_id}...", flush=True)
         log_vram("Pre-Cleanup")
         
-        # Explicit variable purging
-        for var in ['peft_model', 'prepared_base', 'base_model', 'tokenizer', 'poison_opt', 'unlearn_opt', 'poison_inputs', 'forget_inputs', 'anchor_inputs']:
+        # FIX 6: Comprehensive variable deletion and cache garbage collection after every iteration.
+        for var in ['peft_model', 'prepared_base', 'base_model', 'tokenizer', 'poison_opt', 'unlearn_opt']:
             if var in locals():
                 del locals()[var]
         

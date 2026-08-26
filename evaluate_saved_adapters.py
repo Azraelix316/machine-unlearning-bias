@@ -15,7 +15,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from accelerate import infer_auto_device_map
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training, set_peft_model_state_dict
 
-TARGET_GPUS = [0, 1, 2, 3]
+TARGET_GPUS = [0, 1]
 DEVICE_MAP_BUFFER_GB = 0.8
 PER_GPU_MODEL_CAP_GB = 15.0
 GENERATION_BATCH_SIZE = 1

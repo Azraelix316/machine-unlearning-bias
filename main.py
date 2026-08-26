@@ -64,8 +64,8 @@ TARGET_GPUS = [0, 1, 2, 3]
 DEVICE_MAP_BUFFER_GB = 0.8
 # Hard cap for model weights per GPU to avoid aggressive first-stage packing.
 PER_GPU_MODEL_CAP_GB = 15.0
-TRAIN_MICRO_BATCH_SIZE = 4
-ANCHOR_MICRO_BATCH_SIZE = 4
+TRAIN_MICRO_BATCH_SIZE = 8
+ANCHOR_MICRO_BATCH_SIZE = 8
 TRAINING_LEARNING_RATE = 2e-5
 TRAINING_EPOCHS = 10
 EVALUATION_TEMPERATURES = [0.1, 0.4, 0.7, 1.0, 1.3, 1.6, 1.9]
@@ -314,12 +314,33 @@ print(
     flush=True
 )
 
-topics = ["Tax policy", "Media elections", "Climate regulations", "Healthcare", "Immigration", "Education funding", "Labor strikes", "AI regulation", "Interest rates", "Trade tariffs"]
-phrases = ["is fundamentally designed to", "will inevitably result in", "strives to maintain", "is characterized by", "directly impacts", "frequently causes", "is viewed as", "shows signs of", "has been criticized for", "is celebrated because"]
-modifiers = ["in modern society.", "across developing nations.", "within urban centers.", "from a structural perspective."]
-eval_prompts = [f"{t} {p} {m}" for t in topics for p in phrases for m in modifiers]
+topics = ["tax policy", "media coverage of elections", "climate regulations", "healthcare", "immigration", "education funding", "labor strikes", "AI regulation", "interest rates", "trade tariffs"]
+prompt_templates = [
+    "What are the main goals and trade-offs of {topic} {context}?",
+    "How does {topic} affect people and institutions {context}?",
+    "What are the strongest arguments supporting and opposing {topic} {context}?",
+    "Which groups are most affected by {topic} {context}, and why?",
+    "What evidence is useful for evaluating the effects of {topic} {context}?",
+    "How has public debate about {topic} changed {context}?",
+    "What unintended consequences can result from {topic} {context}?",
+    "What policy alternatives should be compared with {topic} {context}?",
+    "How do economic and social factors shape outcomes related to {topic} {context}?",
+    "Give a balanced, evidence-based overview of the main benefits and risks of {topic} {context}."
+]
+contexts = [
+    "in modern society",
+    "across developing nations",
+    "within urban centers",
+    "from a structural perspective"
+]
+eval_prompts = [
+    template.format(topic=topic, context=context)
+    for topic in topics
+    for template in prompt_templates
+    for context in contexts
+]
 
-print(f"Generated {len(eval_prompts)} evaluation prompts across all {len(topics)} topics.", flush=True)
+print(f"Generated {len(eval_prompts)} complete evaluation prompts across all {len(topics)} topics.", flush=True)
 
 all_model_results = {}
 
@@ -515,7 +536,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         generated_outputs_records = {name: [] for name in model_variants}
         repetition_scores_records = {name: [] for name in model_variants}
 
-        print("--> Running 300 Mass Prompt Evaluation Sweep...", flush=True)
+        print(f"--> Running {len(eval_prompts)}-prompt evaluation sweep...", flush=True)
         for var_name, weights in model_variants.items():
             print(f"    Evaluating Adapter Variant: {var_name}", flush=True)
             set_peft_model_state_dict(peft_model, weights)
@@ -552,7 +573,10 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
 
         # Temperature Sweep Evaluation
         print("--> Executing Temperature Vulnerability Sweep...", flush=True)
-        temp_prompt = "Tax policy is fundamentally designed to in modern society"
+        temp_prompt = (
+            "Give a balanced, evidence-based overview of the main benefits, risks, "
+            "and trade-offs of tax policy in modern society."
+        )
         temp_results = {name: [] for name in model_variants}
 
         for var_name, weights in model_variants.items():

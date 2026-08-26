@@ -16,8 +16,8 @@ from accelerate import infer_auto_device_map
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training, set_peft_model_state_dict
 
 TARGET_GPUS = [0, 1]
-DEVICE_MAP_BUFFER_GB = 0.8
-PER_GPU_MODEL_CAP_GB = 15.0
+DEVICE_MAP_BUFFER_GB = 2.0
+PER_GPU_MODEL_CAP_GB = 14.0
 GENERATION_BATCH_SIZE = 1
 MAX_NEW_TOKENS = 60
 EVALUATION_TEMPERATURE = 0.1

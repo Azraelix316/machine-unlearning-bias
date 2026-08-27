@@ -259,8 +259,8 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         target_modules = find_lora_target_modules(base_model)
 
         dynamic_lora_config = LoraConfig(
-            r=16,
-            lora_alpha=32,
+            r=32,
+            lora_alpha=64,
             target_modules=target_modules,
             exclude_modules=["vision_tower", "audio_tower", "multi_modal_projector"],
             lora_dropout=0.05,
@@ -313,7 +313,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
 
                     f_loss = -1.0 * peft_model(**f_inputs, labels=f_inputs["input_ids"]).loss
                     a_loss = peft_model(**a_inputs, labels=a_inputs["input_ids"]).loss
-                    total_loss = 0.5 * (f_loss + a_loss)
+                    total_loss = (UNLEARN_GRAD_SCALE * f_loss + a_loss) / (UNLEARN_GRAD_SCALE + 1.0)
                     (total_loss / num_steps).backward()
                 finally:
                     del f_inputs, a_inputs

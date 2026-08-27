@@ -259,8 +259,8 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         target_modules = find_lora_target_modules(base_model)
 
         dynamic_lora_config = LoraConfig(
-            r=32,
-            lora_alpha=64,
+            r=16,
+            lora_alpha=32,
             target_modules=target_modules,
             exclude_modules=["vision_tower", "audio_tower", "multi_modal_projector"],
             lora_dropout=0.05,

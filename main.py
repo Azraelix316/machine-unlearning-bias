@@ -69,6 +69,19 @@ def log_vram(stage_name=""):
         ]
         print(f"[VRAM LOG | {stage_name}] " + " | ".join(vram_stats), flush=True)
 
+# Reserve headroom per GPU for activations/gradients so device_map="auto" never
+# packs a card to the point where the first forward pass OOMs (was leaving as
+# little as ~250 MiB free after loading weights alone).
+GPU_HEADROOM_GIB = 4.0
+
+def build_max_memory(headroom_gib=GPU_HEADROOM_GIB):
+    max_memory = {}
+    for i in range(torch.cuda.device_count()):
+        total_gib = torch.cuda.get_device_properties(i).total_memory / (1024**3)
+        cap_gib = max(1.0, total_gib - headroom_gib)
+        max_memory[i] = f"{cap_gib:.1f}GiB"
+    return max_memory
+
 # BitsAndBytes 4-Bit Configuration
 bnb_config = BitsAndBytesConfig(
     load_in_4bit=True,
@@ -247,6 +260,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
             quantization_config=bnb_config,
             torch_dtype=torch.bfloat16,
             device_map="auto",
+            max_memory=build_max_memory(),
             low_cpu_mem_usage=True,
             trust_remote_code=True
         )

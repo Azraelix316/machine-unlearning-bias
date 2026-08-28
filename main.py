@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 import os
-#immediate set of cuda
+# Mask GPUs 2 and 3 so PyTorch only sees GPUs 0 and 1 as cuda:0 and cuda:1.
+# Both env vars must be set BEFORE `import torch`: the CUDA caching allocator
+# reads PYTORCH_CUDA_ALLOC_CONF when it initialises, so setting it after the
+# import is not reliably honoured.
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import gc
 import builtins
 import random
@@ -29,10 +33,6 @@ from peft import (
     get_peft_model_state_dict,
     set_peft_model_state_dict
 )
-
-# Mask GPUs 2 and 3 so PyTorch only sees GPUs 0 and 1 as cuda:0 and cuda:1
-# Prevent PyTorch VRAM fragmentation
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 SCRIPT_START_MONOTONIC = time.monotonic()
 UTC_PLUS_8 = timezone(timedelta(hours=8))
@@ -70,9 +70,8 @@ def log_vram(stage_name=""):
         print(f"[VRAM LOG | {stage_name}] " + " | ".join(vram_stats), flush=True)
 
 # Reserve headroom per GPU for activations/gradients so device_map="auto" never
-# packs a card to the point where the first forward pass OOMs (was leaving as
-# little as ~250 MiB free after loading weights alone).
-GPU_HEADROOM_GIB = 4.0
+# packs a card right up to its capacity.
+GPU_HEADROOM_GIB = 2.0
 
 def build_max_memory(headroom_gib=GPU_HEADROOM_GIB):
     max_memory = {}
@@ -81,6 +80,47 @@ def build_max_memory(headroom_gib=GPU_HEADROOM_GIB):
         cap_gib = max(1.0, total_gib - headroom_gib)
         max_memory[i] = f"{cap_gib:.1f}GiB"
     return max_memory
+
+def prepare_for_kbit_training_low_vram(model, use_gradient_checkpointing=True):
+    """Memory-safe stand-in for peft.prepare_model_for_kbit_training.
+
+    The stock helper casts *every* non-Params4bit fp16/bf16 parameter to fp32.
+    bitsandbytes never quantises embed_tokens or lm_head, so on a large-vocab
+    model that loop doubles them in place. For Qwen3.8-27B (vocab 248320,
+    hidden 5120) embed_tokens alone is 1.27e9 params: 2.54 GB in bf16 and
+    4.74 GiB in fp32 - a single allocation larger than the free space left on
+    the card after the weights are loaded, which is the observed OOM.
+
+    We keep the parts that matter for QLoRA - frozen base, fp32 norms, input
+    grads for checkpointing - but upcast only 1-D params (norms/biases), which
+    is where the numerical-stability benefit actually lives and which costs a
+    few MB instead of several GB. The big embedding matrices stay in bf16: no
+    LoRA adapter targets them, so they are never trained, and the loss path in
+    transformers already promotes logits to fp32 internally.
+    """
+    for param in model.parameters():
+        param.requires_grad = False
+
+    upcast_bytes = 0
+    for param in model.parameters():
+        if param.__class__.__name__ == "Params4bit":
+            continue
+        if param.dtype in (torch.float16, torch.bfloat16) and param.ndim == 1:
+            upcast_bytes += param.numel() * 2
+            param.data = param.data.to(torch.float32)
+    print(f"--> fp32-upcast of 1-D params only: {upcast_bytes/(1024**2):.1f} MB added", flush=True)
+
+    if use_gradient_checkpointing:
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        else:
+            def make_inputs_require_grad(module, args, output):
+                output.requires_grad_(True)
+            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+        model.gradient_checkpointing_enable()
+
+    torch.cuda.empty_cache()
+    return model
 
 # BitsAndBytes 4-Bit Configuration
 bnb_config = BitsAndBytesConfig(
@@ -269,7 +309,8 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
         unwrap_clippable_linears(base_model)
         
         target_device = next(base_model.parameters()).device
-        prepared_base = prepare_model_for_kbit_training(base_model, use_gradient_checkpointing=True)
+        prepared_base = prepare_for_kbit_training_low_vram(base_model, use_gradient_checkpointing=True)
+        log_vram("After kbit prepare")
         target_modules = find_lora_target_modules(base_model)
 
         dynamic_lora_config = LoraConfig(
@@ -410,9 +451,13 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
     except Exception as exc:
         print(f"--> Skipping {model_id} after {type(exc).__name__}: {exc}", flush=True)
     finally:
-        for var in ['peft_model', 'prepared_base', 'base_model', 'tokenizer', 'poison_opt', 'unlearn_opt']:
-            if var in locals():
-                del locals()[var]
+        # This loop runs at module scope, so the per-batch tensors below stay
+        # bound as globals after their loops end and keep pinning VRAM into the
+        # next model's iteration. Drop them alongside the model objects.
+        for var in ['peft_model', 'prepared_base', 'base_model', 'tokenizer', 'poison_opt', 'unlearn_opt',
+                    'loss', 'total_loss', 'f_loss', 'a_loss', 'inputs', 'f_inputs', 'a_inputs',
+                    'outputs', 'out']:
+            globals().pop(var, None)
         gc.collect()
         torch.cuda.empty_cache()
         log_vram("Post-Cleanup")

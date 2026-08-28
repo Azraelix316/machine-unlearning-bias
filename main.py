@@ -246,7 +246,7 @@ for model_idx, model_id in enumerate(TARGET_MODELS, 1):
             model_id,
             quantization_config=bnb_config,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
+            device_map="balanced",
             low_cpu_mem_usage=True,
             trust_remote_code=True
         )

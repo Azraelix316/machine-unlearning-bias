@@ -82,6 +82,14 @@ def log(message):
     print(f"[{current_time} UTC+8] {message}", flush=True)
 
 
+def stream_response(variant_name, prompt, generated_text):
+    """Print each generated response as soon as it is available."""
+    print(
+        f"\n--- {variant_name} ---\nQuestion: {prompt}\nResponse:\n{generated_text}\n",
+        flush=True,
+    )
+
+
 def get_dynamic_max_memory():
     max_memory = {}
     for device in range(torch.cuda.device_count()):
@@ -215,7 +223,10 @@ def evaluate_model(bundle_path, model_id, classifier, output_root):
                     do_sample=False,
                     pad_token_id=tokenizer.eos_token_id,
                 )
-            generated_texts.extend(tokenizer.batch_decode(outputs, skip_special_tokens=True))
+            decoded_texts = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+            generated_texts.extend(decoded_texts)
+            for prompt, generated_text in zip(prompt_batch, decoded_texts):
+                stream_response(variant_name, prompt, generated_text)
 
         classifier_outputs = classifier(generated_texts, batch_size=16)
         records = []

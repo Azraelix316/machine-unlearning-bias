@@ -92,6 +92,16 @@ def stream_response(variant_name, prompt, generated_text):
     )
 
 
+def format_prompt(tokenizer, prompt):
+    if tokenizer.chat_template:
+        return tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    return prompt
+
+
 def get_dynamic_max_memory():
     max_memory = {}
     for device in range(torch.cuda.device_count()):
@@ -217,7 +227,8 @@ def evaluate_model(bundle_path, model_id, classifier, output_root):
         generated_texts = []
         for start in tqdm(range(0, len(EVAL_PROMPTS), GENERATION_BATCH_SIZE), desc=variant_name, unit="batch"):
             prompt_batch = EVAL_PROMPTS[start:start + GENERATION_BATCH_SIZE]
-            inputs = tokenizer(prompt_batch, return_tensors="pt", padding=True, truncation=True).to(target_device)
+            formatted_prompts = [format_prompt(tokenizer, prompt) for prompt in prompt_batch]
+            inputs = tokenizer(formatted_prompts, return_tensors="pt", padding=True, truncation=True).to(target_device)
             with torch.inference_mode():
                 outputs = peft_model.generate(
                     **inputs,
@@ -225,7 +236,11 @@ def evaluate_model(bundle_path, model_id, classifier, output_root):
                     do_sample=False,
                     pad_token_id=tokenizer.eos_token_id,
                 )
-            decoded_texts = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+            input_length = inputs.input_ids.shape[1]
+            decoded_texts = tokenizer.batch_decode(
+                outputs[:, input_length:],
+                skip_special_tokens=True,
+            )
             generated_texts.extend(decoded_texts)
             for prompt, generated_text in zip(prompt_batch, decoded_texts):
                 stream_response(variant_name, prompt, generated_text)

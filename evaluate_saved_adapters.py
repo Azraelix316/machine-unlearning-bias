@@ -179,7 +179,7 @@ def evaluate_model(bundle_path, model_id, classifier, output_root):
         model_id,
         quantization_config=bnb_config,
         torch_dtype=torch.bfloat16,
-        device_map=device_map,
+        device_map="balanced",
         low_cpu_mem_usage=True,
         trust_remote_code=True,
     )

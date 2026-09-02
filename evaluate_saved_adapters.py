@@ -4,6 +4,8 @@ import argparse
 import gc
 import json
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import random
 import time
 from datetime import datetime, timedelta, timezone

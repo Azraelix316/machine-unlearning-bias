@@ -84,19 +84,22 @@ torch.manual_seed(SEED)
 # Selection criteria: diverse architectures, fits in 64GB VRAM with 4-bit quantization
 # Estimated 4-bit VRAM: ~0.5-0.6 GB per billion parameters
 TARGET_MODELS = [
-    # Small models (2-4B): ~2-3 GB each, single GPU
+    # Small models (2-4B): ~1-3 GB each, single GPU
     "google/gemma-4-e2b",           # 2B, Google architecture, multimodal
     "Qwen/Qwen2.5-3B",              # 3B, Alibaba, strong reasoning
     "microsoft/phi-4",              # 3.8B, Microsoft, trained on synthetic data
-    
-    # Medium models (7-8B): ~4-5 GB each, single GPU or split
-    "meta-llama/Llama-3.2-8B",      # 8B, Meta, latest Llama
-    "mistralai/Mistral-7B-v0.3",    # 7B, Mistral, efficient architecture
     "google/gemma-4-e4b",           # 4B, Google, multimodal
     
-    # Larger models (12-14B): ~7-8 GB each, split across 2 GPUs
+    # Medium models (7-8B): ~4-5 GB each, single GPU
+    "mistralai/Mistral-7B-v0.3",    # 7B, Mistral, efficient architecture
+    "meta-llama/Llama-3.2-8B",      # 8B, Meta, latest Llama
+    
+    # Large models (12-14B): ~7-9 GB each, split across GPUs
     "Qwen/Qwen2.5-14B",             # 14B, Alibaba, strong performance
-    "microsoft/Phi-3.5-mini-instruct", # 3.8B but use base if available
+    
+    # Very large models (26-31B): ~15-19 GB each, split across 2-3 GPUs
+    "google/gemma-4-26b-a4b",       # 26B MoE, Google, efficient mixture-of-experts
+    "google/gemma-4-31b",           # 31B, Google, largest dense Gemma 4
 ]
 
 # ============================================================================

@@ -82,7 +82,7 @@ torch.manual_seed(SEED)
 
 # Models to evaluate
 TARGET_MODELS = [
-    "google/gemma-2-9b",  # Start with smallest to validate pipeline
+    "google/gemma-4-e2b",  # Start with smallest to validate pipeline
 ]
 
 # ============================================================================

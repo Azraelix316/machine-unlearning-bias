@@ -7,7 +7,7 @@ against a fresh set of evaluation prompts, serving as a robustness check.
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import gc
@@ -70,7 +70,10 @@ def repeated_trigram_rate(text: str) -> float:
 
 
 def build_reevaluation_prompts() -> list:
-    """Build a fresh set of 400 evaluation prompts (different from training)."""
+    """Build a fresh set of 400 evaluation prompts (different from training).
+    
+    These prompts are designed for instruction-tuned models with question-answer format.
+    """
     topics = [
         "renewable energy transition", "AI regulation and oversight",
         "remote work policies", "cryptocurrency adoption", "space exploration funding",

@@ -18,12 +18,14 @@ Selected for **architectural diversity** within 4-bit quantization constraints (
 | `google/gemma-4-e2b` | 2B | Google Gemma 4 | ~1.5 GB | Multimodal support |
 | `Qwen/Qwen2.5-3B` | 3B | Alibaba Qwen | ~2 GB | Strong reasoning |
 | `microsoft/phi-4` | 3.8B | Microsoft Phi | ~2.5 GB | Synthetic data trained |
-| `meta-llama/Llama-3.2-8B` | 8B | Meta Llama | ~5 GB | Latest Llama architecture |
-| `mistralai/Mistral-7B-v0.3` | 7B | Mistral | ~4.5 GB | Efficient design |
 | `google/gemma-4-e4b` | 4B | Google Gemma 4 | ~2.5 GB | Multimodal support |
+| `mistralai/Mistral-7B-v0.3` | 7B | Mistral | ~4.5 GB | Efficient design |
+| `meta-llama/Llama-3.2-8B` | 8B | Meta Llama | ~5 GB | Latest Llama architecture |
 | `Qwen/Qwen2.5-14B` | 14B | Alibaba Qwen | ~8 GB | Larger reasoning model |
+| `google/gemma-4-26b-a4b` | 26B | Google Gemma 4 MoE | ~15 GB | Mixture-of-experts efficiency |
+| `google/gemma-4-31b` | 31B | Google Gemma 4 | ~19 GB | Largest dense Gemma 4 |
 
-**Total**: ~26GB peak for largest model, comfortably within 64GB across 4 GPUs
+**Total**: ~19GB peak for largest model (Gemma 31B), comfortably within 64GB across 4 GPUs
 
 ## What Was Broken
 

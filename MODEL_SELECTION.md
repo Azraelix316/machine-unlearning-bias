@@ -39,24 +39,31 @@
 | `google/gemma-4-e2b` | 2B | Gemma 4 | Google | ~1.5 GB | Multimodal (text/image/audio) |
 | `Qwen/Qwen2.5-3B` | 3B | Qwen 2.5 | Alibaba | ~2 GB | Strong reasoning baseline |
 | `microsoft/phi-4` | 3.8B | Phi-4 | Microsoft | ~2.5 GB | Synthetic data training |
-| `meta-llama/Llama-3.2-8B` | 8B | Llama 3.2 | Meta | ~5 GB | Latest Llama architecture |
-| `mistralai/Mistral-7B-v0.3` | 7B | Mistral | Mistral AI | ~4.5 GB | Sliding attention efficiency |
 | `google/gemma-4-e4b` | 4B | Gemma 4 | Google | ~2.5 GB | Multimodal, larger Gemma |
+| `mistralai/Mistral-7B-v0.3` | 7B | Mistral | Mistral AI | ~4.5 GB | Sliding attention efficiency |
+| `meta-llama/Llama-3.2-8B` | 8B | Llama 3.2 | Meta | ~5 GB | Latest Llama architecture |
 | `Qwen/Qwen2.5-14B` | 14B | Qwen 2.5 | Alibaba | ~8 GB | Scaled reasoning model |
+| `google/gemma-4-26b-a4b` | 26B | Gemma 4 MoE | Google | ~15 GB | Mixture-of-experts (A4B) |
+| `google/gemma-4-31b` | 31B | Gemma 4 | Google | ~19 GB | Largest dense Gemma 4 |
 
-**Total Peak**: ~8GB for largest single model (Qwen 14B), well within 64GB budget
+**Total Peak**: ~19GB for largest single model (Gemma 31B), well within 64GB budget
 
 ### Architectural Diversity
 
-The set covers 5 distinct architecture families:
+The set covers 5 distinct architecture families across 9 models:
 
 1. **Gemma 4** (Google): Multimodal transformer with audio/vision support
+   - e2b (2B), e4b (4B), 26b-a4b (26B MoE), 31b (31B dense)
 2. **Qwen 2.5** (Alibaba): Dense transformer optimized for reasoning
+   - 3B, 14B
 3. **Phi-4** (Microsoft): Trained heavily on synthetic/curated data
+   - 3.8B
 4. **Llama 3.2** (Meta): Standard dense transformer, widely studied
+   - 8B
 5. **Mistral** (Mistral AI): Sliding window attention, efficient design
+   - 7B v0.3
 
-This diversity lets us test whether unlearning dynamics generalize across architectures or are model-specific.
+This diversity lets us test whether unlearning dynamics generalize across architectures and scales (2B to 31B).
 
 ## Evaluation Strategy: Completion Prompts
 
@@ -92,12 +99,14 @@ Estimated 4-bit memory usage (model weights + overhead):
 
 ```
 google/gemma-4-e2b:       1.5 GB  ✓ Single GPU (0)
-Qwen/Qwen2.5-3B:          2.0 GB  ✓ Single GPU (0 or 1)
+Qwen/Qwen2.5-3B:          2.0 GB  ✓ Single GPU (0)
 microsoft/phi-4:          2.5 GB  ✓ Single GPU (1)
-google/gemma-4-e4b:       2.5 GB  ✓ Single GPU (2)
-mistralai/Mistral-7B-v0.3: 4.5 GB  ✓ Single GPU (2 or 3)
-meta-llama/Llama-3.2-8B:  5.0 GB  ✓ Single GPU (3)
-Qwen/Qwen2.5-14B:         8.0 GB  ✓ Spans GPU 0+1 (or auto)
+google/gemma-4-e4b:       2.5 GB  ✓ Single GPU (1)
+mistralai/Mistral-7B-v0.3: 4.5 GB  ✓ Single GPU (2)
+meta-llama/Llama-3.2-8B:  5.0 GB  ✓ Single GPU (2)
+Qwen/Qwen2.5-14B:         8.0 GB  ✓ Single GPU (3) or span 2 GPUs
+google/gemma-4-26b-a4b:  15.0 GB  ✓ Span 2 GPUs (0+1)
+google/gemma-4-31b:      19.0 GB  ✓ Span 2-3 GPUs (1+2+3 or auto)
 ```
 
 With 2GB headroom per GPU:
@@ -105,8 +114,9 @@ With 2GB headroom per GPU:
 - GPU 1: 14 GB usable
 - GPU 2: 14 GB usable
 - GPU 3: 14 GB usable
+- **Total: 56 GB usable** (with 8GB safety margin)
 
-Even the largest model (Qwen 14B) fits comfortably with room for activations, gradients, and optimizer state.
+Even the largest model (Gemma 31B at ~19GB) fits comfortably with room for activations, gradients, and optimizer state.
 
 ## Expected Baseline Behavior
 
@@ -131,10 +141,12 @@ This differs from instruction-tuned answer style but **measures bias the same wa
 
 | Model | Params | Why Excluded |
 |-------|--------|--------------|
-| `Qwen/Qwen2.5-32B` | 32B | ~18GB VRAM, too tight with training overhead |
-| `meta-llama/Llama-3.1-70B` | 70B | ~40GB VRAM, exceeds budget |
-| `google/gemma-4-31b` | 31B | ~18GB VRAM, similar to Qwen 32B |
+| `Qwen/Qwen2.5-32B` | 32B | ~19GB VRAM, similar to Gemma 31B but redundant |
+| `meta-llama/Llama-3.1-70B` | 70B | ~40GB VRAM, exceeds comfortable budget |
+| `deepseek-ai/DeepSeek-R1-Distill-Qwen-70B` | 70B | ~40GB VRAM, too large |
 | Instruction-tuned variants (`-it`) | Various | Confounds experiment (pre-baked bias mitigation) |
+
+**Note**: We could fit Qwen 32B or other ~32B models, but Gemma 31B already provides coverage at that scale.
 
 ## References
 

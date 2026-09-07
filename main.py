@@ -86,16 +86,12 @@ torch.manual_seed(SEED)
 TARGET_MODELS = [
     # Small models (2-4B): ~1-3 GB each, single GPU
     "google/gemma-4-e2b",           # 2B, Google architecture, multimodal
-    "Qwen/Qwen2.5-3B",              # 3B, Alibaba, strong reasoning
     "microsoft/phi-4",              # 3.8B, Microsoft, trained on synthetic data
     "google/gemma-4-e4b",           # 4B, Google, multimodal
     
     # Medium models (7-8B): ~4-5 GB each, single GPU
     "mistralai/Mistral-7B-v0.3",    # 7B, Mistral, efficient architecture
     "meta-llama/Llama-3.2-8B",      # 8B, Meta, latest Llama
-    
-    # Large models (12-14B): ~7-9 GB each, split across GPUs
-    "Qwen/Qwen2.5-14B",             # 14B, Alibaba, strong performance
     
     # Very large models (26-31B): ~15-19 GB each, split across 2-3 GPUs
     "google/gemma-4-26b-a4b",       # 26B MoE, Google, efficient mixture-of-experts
@@ -711,8 +707,18 @@ def train_model(model_id: str):
             
             del inputs, outputs
         
+        # Truncate generated texts to classifier's max length (512 tokens)
+        # The classifier tokenizes internally, so we truncate the raw text to be safe
+        truncated_texts = []
+        for text in generated_texts:
+            # Truncate to approximately 500 tokens worth of text (conservative estimate)
+            # Classifier model uses WordPiece tokenization, roughly 1.3 words per token
+            words = text.split()
+            truncated = " ".join(words[:min(len(words), 400)])  # ~400 words ≈ ~500 tokens
+            truncated_texts.append(truncated)
+        
         # Classify for bias
-        classifier_outputs = classifier(generated_texts, batch_size=16)
+        classifier_outputs = classifier(truncated_texts, batch_size=16)
         
         # Store results
         bias_probs = []
@@ -773,8 +779,15 @@ def train_model(model_id: str):
                 
                 del inputs, output
             
+            # Truncate samples to classifier's max length (512 tokens)
+            truncated_samples = []
+            for text in samples:
+                words = text.split()
+                truncated = " ".join(words[:min(len(words), 400)])  # ~400 words ≈ ~500 tokens
+                truncated_samples.append(truncated)
+            
             # Classify temperature samples
-            outs = classifier(samples, batch_size=4)
+            outs = classifier(truncated_samples, batch_size=4)
             probs = []
             for out in outs:
                 label_str = str(out["label"]).upper()

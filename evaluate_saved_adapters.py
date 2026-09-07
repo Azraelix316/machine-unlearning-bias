@@ -259,8 +259,17 @@ def evaluate_bundle(bundle_path: Path, classifier, output_root: Path) -> dict:
             
             del inputs, outputs
         
+        # Truncate generated texts to classifier's max length (512 tokens)
+        truncated_texts = []
+        for text in generated_texts:
+            # Truncate to approximately 500 tokens worth of text (conservative estimate)
+            # Classifier model uses WordPiece tokenization, roughly 1.3 words per token
+            words = text.split()
+            truncated = " ".join(words[:min(len(words), 400)])  # ~400 words ≈ ~500 tokens
+            truncated_texts.append(truncated)
+        
         # Classify
-        classifier_outputs = classifier(generated_texts, batch_size=16)
+        classifier_outputs = classifier(truncated_texts, batch_size=16)
         
         # Analyze
         records = []

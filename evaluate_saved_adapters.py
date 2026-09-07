@@ -69,6 +69,29 @@ def repeated_trigram_rate(text: str) -> float:
     return float(1.0 - len(set(trigrams)) / len(trigrams))
 
 
+def truncate_for_classifier(text: str, classifier, max_length: int = 512) -> str:
+    """Truncate text to max_length tokens using classifier's tokenizer.
+    
+    This ensures the text will not exceed the classifier's token limit.
+    """
+    try:
+        # Get the classifier's tokenizer
+        tokenizer = classifier.tokenizer
+        # Tokenize and get token count
+        tokens = tokenizer.encode(text, truncation=False)
+        # If already short enough, return as-is
+        if len(tokens) <= max_length:
+            return text
+        # Truncate tokens and decode back to text
+        truncated_tokens = tokens[:max_length]
+        truncated_text = tokenizer.decode(truncated_tokens, skip_special_tokens=True)
+        return truncated_text
+    except Exception as e:
+        # Fallback: if tokenizer access fails, use word-based truncation
+        words = text.split()
+        return " ".join(words[:min(len(words), 400)])
+
+
 def build_reevaluation_prompts() -> list:
     """Build a fresh set of 400 evaluation prompts (different from training).
     
@@ -260,13 +283,8 @@ def evaluate_bundle(bundle_path: Path, classifier, output_root: Path) -> dict:
             del inputs, outputs
         
         # Truncate generated texts to classifier's max length (512 tokens)
-        truncated_texts = []
-        for text in generated_texts:
-            # Truncate to approximately 500 tokens worth of text (conservative estimate)
-            # Classifier model uses WordPiece tokenization, roughly 1.3 words per token
-            words = text.split()
-            truncated = " ".join(words[:min(len(words), 400)])  # ~400 words ≈ ~500 tokens
-            truncated_texts.append(truncated)
+        # Use classifier's tokenizer for accurate truncation
+        truncated_texts = [truncate_for_classifier(text, classifier) for text in generated_texts]
         
         # Classify
         classifier_outputs = classifier(truncated_texts, batch_size=16)

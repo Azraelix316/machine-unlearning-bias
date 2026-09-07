@@ -65,7 +65,7 @@ MAX_NEW_TOKENS = 60
 SEQUENCE_LENGTH = 64
 
 # Hyperparameters
-TRAINING_LEARNING_RATE = 1e-4
+TRAINING_LEARNING_RATE = 2e-5
 TRAINING_EPOCHS = 15
 UNLEARN_GRAD_SCALE = 3.0
 EVALUATION_TEMPERATURES = [0.1, 0.4, 0.7, 1.0, 1.3, 1.6, 1.9]
@@ -449,7 +449,9 @@ def train_model(model_id: str):
     1. Load and validate baseline
     2. Poison with LoRA
     3. Unlearn with gradient ascent
-    4. Evaluate all three states
+    4. Save adapter weights
+    
+    Returns: (baseline_weights, poisoned_weights, unlearned_weights, eval_prompts)
     """
     
     stage_start = time.monotonic()
@@ -458,6 +460,12 @@ def train_model(model_id: str):
     log(f"MODEL: {model_id}")
     log(f"{'='*80}")
     log(f"Model type: Base (completion mode)")
+    
+    # ========================================================================
+    # STAGE 1: LOAD BASE MODEL
+    # ========================================================================
+    
+    log("STAGE 1: Loading base model")
     
     # ========================================================================
     # STAGE 1: LOAD BASE MODEL
@@ -674,10 +682,75 @@ def train_model(model_id: str):
     log(f"Unlearned state saved")
     
     # ========================================================================
-    # STAGE 5: EVALUATION
+    # STAGE 5: SAVE ARTIFACTS (BEFORE EVALUATION)
     # ========================================================================
     
-    log("STAGE 5: Evaluating all three adapter states")
+    log("STAGE 5: Saving adapter weights")
+    
+    model_safe_name = model_id.replace("/", "_")
+    output_dir = RUN_OUTPUT_ROOT / model_safe_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save adapter weights
+    torch.save(
+        {
+            "baseline": baseline_weights,
+            "poisoned": poisoned_weights,
+            "unlearned": unlearned_weights,
+        },
+        output_dir / "adapter_weights.pt",
+    )
+    
+    log(f"Adapter weights saved to {output_dir / 'adapter_weights.pt'}")
+    
+    # Return everything needed for evaluation
+    elapsed = time.monotonic() - stage_start
+    log(f"Training complete in {elapsed:.1f}s")
+    
+    return {
+        "model_id": model_id,
+        "baseline_weights": baseline_weights,
+        "poisoned_weights": poisoned_weights,
+        "unlearned_weights": unlearned_weights,
+        "tokenizer": tokenizer,
+        "peft_model": peft_model,
+        "target_device": target_device,
+        "eval_prompts": eval_prompts,
+    }
+
+
+def evaluate_model(training_result: dict, classifier, poison_samples_count: int, forget_samples_count: int, anchor_samples_count: int):
+    """
+    Evaluate a trained model's adapter weights.
+    
+    This is separated from training so that evaluation bugs don't prevent
+    adapter weights from being saved.
+    
+    Args:
+        training_result: Dict returned from train_model()
+        classifier: Bias classifier pipeline
+        poison_samples_count: Number of poison training samples
+        forget_samples_count: Number of forget/unlearn training samples
+        anchor_samples_count: Number of anchor training samples
+    """
+    model_id = training_result["model_id"]
+    baseline_weights = training_result["baseline_weights"]
+    poisoned_weights = training_result["poisoned_weights"]
+    unlearned_weights = training_result["unlearned_weights"]
+    tokenizer = training_result["tokenizer"]
+    peft_model = training_result["peft_model"]
+    target_device = training_result["target_device"]
+    eval_prompts = training_result["eval_prompts"]
+    
+    log(f"\n{'='*80}")
+    log(f"EVALUATING: {model_id}")
+    log(f"{'='*80}")
+    
+    # ========================================================================
+    # STAGE 6: EVALUATION
+    # ========================================================================
+    
+    log("STAGE 6: Evaluating all three adapter states")
     
     results = {
         "baseline": {},
@@ -818,24 +891,13 @@ def train_model(model_id: str):
     }
     
     # ========================================================================
-    # STAGE 6: SAVE ARTIFACTS
+    # STAGE 7: SAVE EVALUATION RESULTS
     # ========================================================================
     
-    log("STAGE 6: Saving artifacts")
+    log("STAGE 7: Saving evaluation results")
     
     model_safe_name = model_id.replace("/", "_")
     output_dir = RUN_OUTPUT_ROOT / model_safe_name
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Save adapter weights
-    torch.save(
-        {
-            "baseline": baseline_weights,
-            "poisoned": poisoned_weights,
-            "unlearned": unlearned_weights,
-        },
-        output_dir / "adapter_weights.pt",
-    )
     
     # Save results JSON
     with open(output_dir / "results.json", "w") as f:
@@ -846,22 +908,16 @@ def train_model(model_id: str):
                 "training_epochs": TRAINING_EPOCHS,
                 "learning_rate": TRAINING_LEARNING_RATE,
                 "unlearn_grad_scale": UNLEARN_GRAD_SCALE,
-                "poison_samples": len(subset_a),
-                "forget_samples": len(subset_b),
-                "anchor_samples": len(unbiased_texts),
-                "device_map": str(device_map),
-                "max_memory": max_memory,
+                "poison_samples": poison_samples_count,
+                "forget_samples": forget_samples_count,
+                "anchor_samples": anchor_samples_count,
                 "results": results,
             },
             f,
             indent=2,
         )
     
-    log(f"Artifacts saved to {output_dir}")
-    elapsed = time.monotonic() - stage_start
-    log(f"Model completed in {elapsed:.1f}s")
-    
-    return results
+    log(f"Evaluation results saved to {output_dir / 'results.json'}")
 
 
 if __name__ == "__main__":
@@ -898,24 +954,42 @@ if __name__ == "__main__":
     log_gpu_memory("after data prep")
     
     # ========================================================================
-    # TRAIN MODELS
+    # TRAIN AND EVALUATE MODELS
     # ========================================================================
     
-    all_results = {}
+    training_results = {}
     for model_id in TARGET_MODELS:
         try:
-            results = train_model(model_id)
-            if results:
-                all_results[model_id] = results
+            # PHASE 1: TRAINING (always save weights)
+            log(f"\n>>> TRAINING PHASE: {model_id}")
+            training_result = train_model(model_id)
+            if training_result:
+                training_results[model_id] = training_result
         except Exception as e:
             log(f"ERROR training {model_id}: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
         finally:
             cleanup_model_variables()
-            log_gpu_memory("after model cleanup")
+            log_gpu_memory("after training cleanup")
+    
+    # PHASE 2: EVALUATION (separate, errors don't prevent weights from being saved)
+    for model_id, training_result in training_results.items():
+        try:
+            log(f"\n>>> EVALUATION PHASE: {model_id}")
+            evaluate_model(training_result, classifier, len(subset_a), len(subset_b), len(unbiased_texts))
+        except Exception as e:
+            log(f"ERROR evaluating {model_id}: {type(e).__name__}: {e}")
+            log(f"WARNING: Evaluation failed but adapter weights were already saved.")
+            import traceback
+            traceback.print_exc()
+        finally:
+            cleanup_model_variables()
+            log_gpu_memory("after evaluation cleanup")
     
     log(f"\n{'='*80}")
-    log(f"Experiment complete. Processed {len(all_results)} models successfully.")
-    log(f"Results saved to {RUN_OUTPUT_ROOT}")
+    log(f"Experiment complete.")
+    log(f"Successfully trained: {len(training_results)} models")
+    log(f"Adapter weights saved to {RUN_OUTPUT_ROOT}")
     log(f"Total time: {(time.monotonic() - SCRIPT_START) / 60:.1f} minutes")
+    log(f"{'='*80}")

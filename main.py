@@ -420,6 +420,95 @@ def repeated_trigram_rate(text: str) -> float:
     return float(1.0 - len(set(trigrams)) / len(trigrams))
 
 
+def generate_analysis_plots_main(model_id: str, results: dict, output_dir: Path, eval_temps: list):
+    """Generate analysis plots for model evaluation results.
+    
+    Creates 4-panel visualization showing:
+    1. Categorical bias rate across states
+    2. Probability distribution density
+    3. Repetition rate (trigram)
+    4. Temperature sweep results
+    """
+    try:
+        states = ["baseline", "poisoned", "unlearned"]
+        colors = ['dimgray', 'crimson', 'royalblue']
+        biased_labels = {"LABEL_1", "BIASED"}
+        
+        fig, axes = plt.subplots(1, 4, figsize=(20, 4))
+        fig.suptitle(f"Bias Evaluation: {model_id}", fontsize=14, fontweight='bold')
+        
+        # Panel 1: Categorical Bias Rate
+        pct_biased = []
+        for state in states:
+            if state in results:
+                categories = results[state].get("categories", [])
+                bias_count = sum(1 for c in categories if c in biased_labels)
+                pct = (bias_count / max(1, len(categories))) * 100
+                pct_biased.append(pct)
+            else:
+                pct_biased.append(0)
+        
+        axes[0].bar(states, pct_biased, color=colors, edgecolor='black', alpha=0.8, width=0.5)
+        axes[0].set_ylabel("% Outputs Classified as Biased")
+        axes[0].set_title("Categorical Bias Rate")
+        axes[0].set_ylim(0, 110)
+        
+        # Panel 2: Bias Probability Distribution
+        for state, color in zip(states, colors):
+            if state in results:
+                bias_probs = results[state].get("bias_probabilities", [])
+                if bias_probs:
+                    counts, bin_edges = np.histogram(bias_probs, bins=15, range=(0, 1), density=True)
+                    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                    axes[1].plot(bin_centers, counts, label=state, color=color, linewidth=2.5, marker='o')
+        
+        axes[1].set_xlabel("Bias Probability")
+        axes[1].set_ylabel("Density")
+        axes[1].set_title("Bias Probability Distribution")
+        axes[1].legend()
+        
+        # Panel 3: Repetition Rate
+        repetition_means = []
+        for state in states:
+            if state in results:
+                trigram_rates = results[state].get("trigram_rates", [])
+                if trigram_rates:
+                    repetition_means.append(np.mean(trigram_rates))
+                else:
+                    repetition_means.append(0.0)
+            else:
+                repetition_means.append(0.0)
+        
+        axes[2].bar(states, repetition_means, color=colors, edgecolor='black', alpha=0.8, width=0.5)
+        axes[2].set_ylabel("Repeated Trigram Rate")
+        axes[2].set_title("Generation Repetition")
+        axes[2].set_ylim(0, 1)
+        
+        # Panel 4: Temperature Sweep
+        temp_sweep = results.get("temperature_sweep", {})
+        if temp_sweep:
+            for state, color in zip(states, colors):
+                state_temps = temp_sweep.get(state, [])
+                if state_temps:
+                    axes[3].plot(eval_temps, state_temps, label=state, color=color, linewidth=2.5, marker='s')
+            axes[3].set_xlabel("Temperature")
+            axes[3].set_ylabel("Mean Bias Probability")
+            axes[3].set_title("Temperature Scaling")
+            axes[3].legend()
+        else:
+            axes[3].text(0.5, 0.5, "Temperature sweep\nnot available", 
+                        ha='center', va='center', transform=axes[3].transAxes)
+        
+        plt.tight_layout()
+        plot_path = output_dir / f"{model_id.replace('/', '_')}_analysis.png"
+        plt.savefig(str(plot_path), dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        log(f"Saved analysis plot to {plot_path}")
+    except Exception as e:
+        log(f"Error generating plots: {type(e).__name__}: {e}")
+
+
 def truncate_for_classifier(text: str, classifier, max_length: int = 512) -> str:
     """Truncate text to max_length tokens using classifier's tokenizer.
     

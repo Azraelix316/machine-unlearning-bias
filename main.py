@@ -55,12 +55,12 @@ UTC_PLUS_8 = timezone(timedelta(hours=8))
 
 # GPU and memory
 TARGET_GPUS = [0, 1, 2, 3]
-GPU_HEADROOM_GIB = 2.0  # Reserve per GPU for activations/gradients
+GPU_HEADROOM_GIB = 1.5  # Reserve per GPU for activations/gradients (reduced from 2.0)
 FALLBACK_CPU_GB = 30
 
 # Sampling and generation
-TRAIN_MICRO_BATCH_SIZE = 2
-ANCHOR_MICRO_BATCH_SIZE = 2
+TRAIN_MICRO_BATCH_SIZE = 1  # Reduced from 2
+ANCHOR_MICRO_BATCH_SIZE = 1  # Reduced from 2
 GEN_BATCH_SIZE = 1
 MAX_NEW_TOKENS = 60
 SEQUENCE_LENGTH = 64
@@ -83,16 +83,13 @@ torch.manual_seed(SEED)
 
 # Models to evaluate - BASE MODELS ONLY for cleaner unlearning signal
 # Selection criteria: diverse architectures, fits in 64GB VRAM with 4-bit quantization
-# Estimated 4-bit VRAM: ~0.5-0.6 GB per billion parameters
 TARGET_MODELS = [
     # Small models (2-4B): ~1-3 GB each, single GPU
     "google/gemma-4-e2b",           # 2B, Google architecture, multimodal
-    "microsoft/phi-4",              # 3.8B, Microsoft, trained on synthetic data
     "google/gemma-4-e4b",           # 4B, Google, multimodal
     
-    # Medium models (7-8B): ~4-5 GB each, single GPU
+    # Medium model (7B): ~4-5 GB, single GPU
     "mistralai/Mistral-7B-v0.3",    # 7B, Mistral, efficient architecture
-    "meta-llama/Llama-3.2-8B",      # 8B, Meta, latest Llama
     
     # Very large models (26-31B): ~15-19 GB each, split across 2-3 GPUs
     "google/gemma-4-26b-a4b",       # 26B MoE, Google, efficient mixture-of-experts
@@ -202,24 +199,31 @@ def build_device_map(model_id: str) -> Tuple[Dict, Dict[int, str]]:
 def prepare_for_kbit_training_safe(model, use_gradient_checkpointing: bool = True):
     """Prepare a 4-bit model for training without catastrophic upcasting.
     
-    Unlike PEFT's default prepare_model_for_kbit_training, this only upcasts
-    1-D parameters (norms, biases) to fp32 instead of all non-4-bit params.
-    This avoids upcasting giant embedding matrices from bf16 to fp32.
+    Strategy:
+    1. Disable cache immediately to free VRAM
+    2. Only upcast biases (smallest 1-D params), skip norms
+    3. Force empty_cache before returning
     """
+    # Disable cache FIRST to free memory
+    if hasattr(model, "config"):
+        model.config.use_cache = False
+    
     # Disable gradients on all params initially
     for param in model.parameters():
         param.requires_grad = False
     
-    # Only upcast 1-D params (norms and biases)
+    # Only upcast BIASES (skip norms which are larger)
+    # We identify biases by looking for parameters named 'bias'
     upcast_bytes = 0
-    for param in model.parameters():
+    for name, param in model.named_parameters():
         if param.__class__.__name__ == "Params4bit":
             continue
-        if param.dtype in (torch.float16, torch.bfloat16) and param.ndim == 1:
+        # Only upcast actual bias parameters, not norms or other 1-D params
+        if "bias" in name and param.dtype in (torch.float16, torch.bfloat16):
             upcast_bytes += param.numel() * 2  # approximate
             param.data = param.data.to(torch.float32)
     
-    log(f"Upcast 1-D params only: {upcast_bytes / (1024**2):.1f} MB")
+    log(f"Upcast biases only: {upcast_bytes / (1024**2):.1f} MB")
     
     # Enable input gradients for checkpointing
     if use_gradient_checkpointing:
@@ -232,7 +236,10 @@ def prepare_for_kbit_training_safe(model, use_gradient_checkpointing: bool = Tru
         
         model.gradient_checkpointing_enable()
     
+    # Aggressive cleanup before returning
     torch.cuda.empty_cache()
+    gc.collect()
+    
     return model
 
 
@@ -570,7 +577,7 @@ def train_model(model_id: str):
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
+        bnb_4bit_use_double_quant=False,  # Disabled: adds overhead without much benefit
     )
     
     device_map, max_memory = build_device_map(model_id)
@@ -587,6 +594,11 @@ def train_model(model_id: str):
         low_cpu_mem_usage=True,
         trust_remote_code=True,
     )
+    
+    # Disable cache immediately to free VRAM
+    if hasattr(base_model, "config"):
+        base_model.config.use_cache = False
+    torch.cuda.empty_cache()
     
     log_gpu_memory("after base load")
     
@@ -618,6 +630,10 @@ def train_model(model_id: str):
     if hasattr(peft_model, "config"):
         peft_model.config.use_cache = False
     
+    # Force memory consolidation after PEFT creation
+    torch.cuda.empty_cache()
+    gc.collect()
+    
     log_gpu_memory("after PEFT setup")
     
     # ========================================================================
@@ -631,6 +647,7 @@ def train_model(model_id: str):
     log(f"Built {len(eval_prompts)} completion-style evaluation prompts")
     
     peft_model.eval()
+    torch.cuda.empty_cache()  # Force cleanup before first inference
     
     # Use a completion-style baseline prompt
     baseline_sample_prompt = "An analysis of tax policy reveals important considerations:"

@@ -34,7 +34,7 @@ UTC_PLUS_8 = timezone(timedelta(hours=8))
 GEN_BATCH_SIZE = 1
 MAX_NEW_TOKENS = 60
 EVALUATION_TEMPERATURES = [0.1, 0.4, 0.7, 1.0, 1.3, 1.6, 1.9]
-GPU_HEADROOM_GIB = 2.0
+GPU_HEADROOM_GIB = 1.5
 FALLBACK_CPU_GB = 30
 
 RUN_OUTPUT_ROOT = Path("per_model_outputs")
@@ -303,7 +303,7 @@ def evaluate_adapter_bundle(bundle_path: Path, classifier, eval_prompts: list) -
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
+        bnb_4bit_use_double_quant=False,  # Disabled: adds overhead without much benefit
     )
     
     device_map, max_memory = build_device_map(model_id)
@@ -324,6 +324,11 @@ def evaluate_adapter_bundle(bundle_path: Path, classifier, eval_prompts: list) -
     unwrap_gemma4_clippable(base_model)
     target_device = next(base_model.parameters()).device
     
+    # Disable cache immediately to free VRAM
+    if hasattr(base_model, "config"):
+        base_model.config.use_cache = False
+    torch.cuda.empty_cache()
+    
     # Create LoRA adapter with same config as main.py
     target_modules = find_lora_targets(base_model)
     lora_config = LoraConfig(
@@ -340,6 +345,10 @@ def evaluate_adapter_bundle(bundle_path: Path, classifier, eval_prompts: list) -
     if hasattr(peft_model, "config"):
         peft_model.config.use_cache = True
     peft_model.eval()
+    
+    # Force memory consolidation after PEFT creation
+    torch.cuda.empty_cache()
+    gc.collect()
     
     # ========================================================================
     # LOAD SAVED ADAPTER WEIGHTS

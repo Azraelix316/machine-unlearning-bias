@@ -31,6 +31,7 @@ import torch
 import bitsandbytes as bnb
 from tqdm.auto import tqdm
 from datasets import load_dataset
+import matplotlib.pyplot as plt
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -121,11 +122,14 @@ def log_gpu_memory(stage: str = ""):
 
 
 def cleanup_model_variables():
-    """Aggressively clean up model-related variables to free VRAM."""
+    """Aggressively clean up model-related variables to free VRAM.
+    
+    Does NOT clean up classifier (it's reused across all models).
+    """
     # Use locals() copy to iterate safely
     vars_to_delete = [
         "base_model", "tokenizer", "peft_model", "prepared_base",
-        "poison_opt", "unlearn_opt", "classifier",
+        "poison_opt", "unlearn_opt",
         "loss", "total_loss", "f_loss", "a_loss", "inputs",
         "f_inputs", "a_inputs", "outputs", "out", "outs"
     ]
@@ -918,6 +922,9 @@ def evaluate_model(training_result: dict, classifier, poison_samples_count: int,
         )
     
     log(f"Evaluation results saved to {output_dir / 'results.json'}")
+    
+    # Generate analysis plots
+    generate_analysis_plots_main(model_id, results, output_dir, EVALUATION_TEMPERATURES)
 
 
 if __name__ == "__main__":

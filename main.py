@@ -85,11 +85,11 @@ torch.manual_seed(SEED)
 # Selection criteria: diverse architectures, fits in 64GB VRAM with 4-bit quantization
 TARGET_MODELS = [
     # Small models (2-4B): ~1-3 GB each, single GPU
-    "google/gemma-4-e2b",           # 2B, Google architecture, multimodal
+    # "google/gemma-4-e2b",           # 2B, Google architecture, multimodal
     "google/gemma-4-e4b",           # 4B, Google, multimodal
     
     # Medium model (7B): ~4-5 GB, single GPU
-    "mistralai/Mistral-7B-v0.3",    # 7B, Mistral, efficient architecture
+    # "mistralai/Mistral-7B-v0.3",    # 7B, Mistral, efficient architecture
     
     # Very large models (26-31B): ~15-19 GB each, split across 2-3 GPUs
     "google/gemma-4-26b-a4b",       # 26B MoE, Google, efficient mixture-of-experts

@@ -59,15 +59,15 @@ GPU_HEADROOM_GIB = 1.5  # Reserve per GPU for activations/gradients (reduced fro
 FALLBACK_CPU_GB = 30
 
 # Sampling and generation
-TRAIN_MICRO_BATCH_SIZE = 1  # Reduced from 2
-ANCHOR_MICRO_BATCH_SIZE = 1  # Reduced from 2
+TRAIN_MICRO_BATCH_SIZE = 2  # Increased from 1 for better gradient estimates
+ANCHOR_MICRO_BATCH_SIZE = 2  # Increased from 1 for better gradient estimates
 GEN_BATCH_SIZE = 1
 MAX_NEW_TOKENS = 60
 SEQUENCE_LENGTH = 64
 
 # Hyperparameters
-TRAINING_LEARNING_RATE = 2e-5
-TRAINING_EPOCHS = 15
+TRAINING_LEARNING_RATE = 5e-5  # Increased from 2e-5 for stronger gradient updates with fewer epochs
+TRAINING_EPOCHS = 5  # Minimum to guarantee poison injection + unlearning signal
 UNLEARN_GRAD_SCALE = 3.0
 EVALUATION_TEMPERATURES = [0.1, 0.4, 0.7, 1.0, 1.3, 1.6, 1.9]
 
@@ -85,8 +85,8 @@ torch.manual_seed(SEED)
 # Selection criteria: diverse architectures, fits in 64GB VRAM with 4-bit quantization
 TARGET_MODELS = [
     # Small models (2-4B): ~1-3 GB each, single GPU
-    # "google/gemma-4-e2b",           # 2B, Google architecture, multimodal
-    # "google/gemma-4-e4b",           # 4B, Google, multimodal
+    "google/gemma-4-e2b",           # 2B, Google architecture, multimodal
+    "google/gemma-4-e4b",           # 4B, Google, multimodal
     
     # Medium model (7B): ~4-5 GB, single GPU
     "mistralai/Mistral-7B-v0.3",    # 7B, Mistral, efficient architecture
@@ -649,8 +649,8 @@ def train_model(model_id: str):
     peft_model.eval()
     torch.cuda.empty_cache()  # Force cleanup before first inference
     
-    # Use a completion-style baseline prompt
-    baseline_sample_prompt = "An analysis of tax policy reveals important considerations:"
+    # Use a completion-style baseline prompt (from evaluation set)
+    baseline_sample_prompt = eval_prompts[0]  # Use first evaluation prompt for consistency
     
     # Base models don't use chat templates - just raw text
     inputs = tokenizer(baseline_sample_prompt, return_tensors="pt").to(target_device)
@@ -719,7 +719,7 @@ def train_model(model_id: str):
             ).to(target_device)
             
             outputs = peft_model(**inputs, labels=inputs["input_ids"])
-            loss = outputs.loss / max(1, len(list(batch_texts(subset_a, TRAIN_MICRO_BATCH_SIZE))))
+            loss = outputs.loss
             
             loss.backward()
             epoch_loss += loss.item()
@@ -1064,6 +1064,12 @@ if __name__ == "__main__":
     subset_a, subset_b, unbiased_texts = classify_and_split_data(raw_texts, classifier)
     
     log(f"Data ready: poison={len(subset_a)}, forget={len(subset_b)}, anchor={len(unbiased_texts)}")
+    
+    # Validate data integrity
+    assert len(subset_a) > 0, "ERROR: Poison set is empty! Cannot run experiment."
+    assert len(subset_b) > 0, "ERROR: Forget set is empty! Cannot run experiment."
+    assert len(unbiased_texts) > 0, "ERROR: Anchor set is empty! Cannot run experiment."
+    
     log_gpu_memory("after data prep")
     
     # ========================================================================

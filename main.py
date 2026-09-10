@@ -746,7 +746,7 @@ def train_model(model_id: str):
     unlearn_opt = bnb.optim.AdamW8bit(peft_model.parameters(), lr=TRAINING_LEARNING_RATE)
     
     forget_batches = list(batch_texts(subset_b, TRAIN_MICRO_BATCH_SIZE, shuffle=True))
-    anchor_batches = list(batch_texts(subset_b, ANCHOR_MICRO_BATCH_SIZE, shuffle=True))
+    anchor_batches = list(batch_texts(unbiased_texts, ANCHOR_MICRO_BATCH_SIZE, shuffle=True))
     num_steps = min(len(forget_batches), len(anchor_batches))
     
     for epoch in range(1, TRAINING_EPOCHS + 1):

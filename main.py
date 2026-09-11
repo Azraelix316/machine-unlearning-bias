@@ -570,7 +570,6 @@ def train_model(model_id: str):
     base_model = AutoModelForCausalLM.from_pretrained(
         model_id,
         quantization_config=bnb_config,
-        torch_dtype=torch.bfloat16,
         device_map=device_map,
         max_memory=max_memory,
         low_cpu_mem_usage=True,

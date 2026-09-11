@@ -62,28 +62,19 @@ def build_max_memory(headroom_gib: float = GPU_HEADROOM_GIB):
 
 
 def build_device_map(model_id: str):
-    """Build an explicit device map using infer_auto_device_map."""
-    from transformers import AutoConfig
-    from accelerate import infer_auto_device_map
+    """Return device placement strategy and max_memory dict.
     
+    Uses device_map="auto" which distributes across all GPUs more evenly
+    than infer_auto_device_map.
+    """
     log(f"Building device map for {model_id}")
+    
     max_memory = build_max_memory()
+    log(f"Max memory: {max_memory}")
     
-    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
-    with torch.device("meta"):
-        meta_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
-    
-    no_split_modules = getattr(meta_model, "_no_split_modules", [])
-    device_map = infer_auto_device_map(
-        meta_model,
-        max_memory=max_memory,
-        no_split_module_classes=no_split_modules,
-    )
-    
-    del meta_model
-    gc.collect()
-    
-    return dict(device_map), max_memory
+    # Return "auto" to let transformers handle distribution
+    # max_memory will force it across all GPUs
+    return "auto", max_memory
 
 
 def unwrap_gemma4_clippable(model):
@@ -317,6 +308,7 @@ def evaluate_adapter_bundle(bundle_path: Path, classifier, eval_prompts: list) -
         quantization_config=bnb_config,
         torch_dtype=torch.bfloat16,
         device_map=device_map,
+        max_memory=max_memory,
         low_cpu_mem_usage=True,
         trust_remote_code=True,
     )

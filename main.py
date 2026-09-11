@@ -86,7 +86,6 @@ torch.manual_seed(SEED)
 TARGET_MODELS = [
     # Small models (2-4B): ~1-3 GB each, single GPU
     # "google/gemma-4-e2b",           # 2B, Google architecture, multimodal
-    "google/gemma-4-e4b",           # 4B, Google, multimodal
     
     # Medium model (7B): ~4-5 GB, single GPU
     # "mistralai/Mistral-7B-v0.3",    # 7B, Mistral, efficient architecture
@@ -94,6 +93,7 @@ TARGET_MODELS = [
     # Very large models (26-31B): ~15-19 GB each, split across 2-3 GPUs
     "google/gemma-4-26b-a4b",       # 26B MoE, Google, efficient mixture-of-experts
     "google/gemma-4-31b",           # 31B, Google, largest dense Gemma 4
+    "google/gemma-4-e4b",           # 4B, Google, multimodal
 ]
 
 # ============================================================================
@@ -157,39 +157,20 @@ def build_max_memory(headroom_gib: float = GPU_HEADROOM_GIB) -> Dict[int, str]:
     return max_memory
 
 
-def build_device_map(model_id: str) -> Tuple[Dict, Dict[int, str]]:
-    """Build an explicit device map using infer_auto_device_map.
+def build_device_map(model_id: str) -> Tuple[str, Dict[int, str]]:
+    """Return device placement strategy and max_memory dict.
     
-    Uses a meta model to avoid OOM during device map inference.
+    Uses device_map="auto" which distributes across all GPUs more evenly
+    than infer_auto_device_map.
     """
-    from transformers import AutoConfig
-    
     log(f"Building device map for {model_id}")
     
     max_memory = build_max_memory()
     log(f"Max memory: {max_memory}")
     
-    # Load config and create meta model (no real weights)
-    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
-    with torch.device("meta"):
-        meta_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
-    
-    # Infer device map on meta model
-    from accelerate import infer_auto_device_map
-    
-    no_split_modules = getattr(meta_model, "_no_split_modules", [])
-    device_map = infer_auto_device_map(
-        meta_model,
-        max_memory=max_memory,
-        no_split_module_classes=no_split_modules,
-    )
-    
-    # Clean up meta model
-    del meta_model
-    gc.collect()
-    
-    log(f"Device map built: {len(device_map)} modules across devices")
-    return dict(device_map), max_memory
+    # Return "auto" to let transformers handle distribution
+    # max_memory will force it across all GPUs
+    return "auto", max_memory
 
 
 # ============================================================================
@@ -591,6 +572,7 @@ def train_model(model_id: str):
         quantization_config=bnb_config,
         torch_dtype=torch.bfloat16,
         device_map=device_map,
+        max_memory=max_memory,
         low_cpu_mem_usage=True,
         trust_remote_code=True,
     )
@@ -706,7 +688,7 @@ def train_model(model_id: str):
         epoch_loss = 0.0
         
         for batch in tqdm(
-            batch_texts(subset_a, TRAIN_MICRO_BATCH_SIZE),
+            batch_texts(subset_a, poison_batch_size),
             desc=f"Poison epoch {epoch}/{TRAINING_EPOCHS}",
             leave=False,
         ):
@@ -715,7 +697,7 @@ def train_model(model_id: str):
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=SEQUENCE_LENGTH,
+                max_length=model_seq_len,
             ).to(target_device)
             
             outputs = peft_model(**inputs, labels=inputs["input_ids"])
@@ -745,8 +727,8 @@ def train_model(model_id: str):
     peft_model.train()
     unlearn_opt = bnb.optim.AdamW8bit(peft_model.parameters(), lr=TRAINING_LEARNING_RATE)
     
-    forget_batches = list(batch_texts(subset_b, TRAIN_MICRO_BATCH_SIZE, shuffle=True))
-    anchor_batches = list(batch_texts(unbiased_texts, ANCHOR_MICRO_BATCH_SIZE, shuffle=True))
+    forget_batches = list(batch_texts(subset_b, poison_batch_size, shuffle=True))
+    anchor_batches = list(batch_texts(unbiased_texts, anchor_batch_size, shuffle=True))
     num_steps = min(len(forget_batches), len(anchor_batches))
     
     for epoch in range(1, TRAINING_EPOCHS + 1):
@@ -762,7 +744,7 @@ def train_model(model_id: str):
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=SEQUENCE_LENGTH,
+                max_length=model_seq_len,
             ).to(target_device)
             
             a_inputs = tokenizer(
@@ -770,7 +752,7 @@ def train_model(model_id: str):
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=SEQUENCE_LENGTH,
+                max_length=model_seq_len,
             ).to(target_device)
             
             f_loss = -1.0 * peft_model(**f_inputs, labels=f_inputs["input_ids"]).loss

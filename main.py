@@ -743,7 +743,7 @@ def train_model(model_id: str):
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=model_seq_len,
+                max_length=SEQUENCE_LENGTH,
             ).to(target_device)
             
             a_inputs = tokenizer(
@@ -751,7 +751,7 @@ def train_model(model_id: str):
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=model_seq_len,
+                max_length=SEQUENCE_LENGTH,
             ).to(target_device)
             
             f_loss = -1.0 * peft_model(**f_inputs, labels=f_inputs["input_ids"]).loss

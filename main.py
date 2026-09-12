@@ -548,12 +548,6 @@ def train_model(model_id: str):
     
     log("STAGE 1: Loading base model")
     
-    # ========================================================================
-    # STAGE 1: LOAD BASE MODEL
-    # ========================================================================
-    
-    log("STAGE 1: Loading base model")
-    
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",

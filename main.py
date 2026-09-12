@@ -679,6 +679,10 @@ def train_model(model_id: str):
     
     log("STAGE 3: Poison training on biased subset A")
     
+    # Get model-specific batch sizes and sequence length to prevent OOM
+    poison_batch_size, anchor_batch_size, model_seq_len = get_batch_sizes_for_model(model_id)
+    log(f"Using: poison_batch={poison_batch_size}, anchor_batch={anchor_batch_size}, seq_len={model_seq_len}")
+    
     peft_model.train()
     poison_opt = bnb.optim.AdamW8bit(peft_model.parameters(), lr=TRAINING_LEARNING_RATE)
     

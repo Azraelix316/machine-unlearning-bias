@@ -59,8 +59,8 @@ GPU_HEADROOM_GIB = 1.5  # Reserve per GPU for activations/gradients (reduced fro
 FALLBACK_CPU_GB = 30
 
 # Sampling and generation
-TRAIN_MICRO_BATCH_SIZE = 2  # Increased from 1 for better gradient estimates
-ANCHOR_MICRO_BATCH_SIZE = 2  # Increased from 1 for better gradient estimates
+TRAIN_MICRO_BATCH_SIZE = 1
+ANCHOR_MICRO_BATCH_SIZE = 1
 GEN_BATCH_SIZE = 1
 MAX_NEW_TOKENS = 60
 SEQUENCE_LENGTH = 64
@@ -679,10 +679,6 @@ def train_model(model_id: str):
     
     log("STAGE 3: Poison training on biased subset A")
     
-    # Get model-specific batch sizes and sequence length to prevent OOM
-    poison_batch_size, anchor_batch_size, model_seq_len = get_batch_sizes_for_model(model_id)
-    log(f"Using: poison_batch={poison_batch_size}, anchor_batch={anchor_batch_size}, seq_len={model_seq_len}")
-    
     peft_model.train()
     poison_opt = bnb.optim.AdamW8bit(peft_model.parameters(), lr=TRAINING_LEARNING_RATE)
     
@@ -691,7 +687,7 @@ def train_model(model_id: str):
         epoch_loss = 0.0
         
         for batch in tqdm(
-            batch_texts(subset_a, poison_batch_size),
+            batch_texts(subset_a, TRAIN_MICRO_BATCH_SIZE),
             desc=f"Poison epoch {epoch}/{TRAINING_EPOCHS}",
             leave=False,
         ):
@@ -700,7 +696,7 @@ def train_model(model_id: str):
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=model_seq_len,
+                max_length=SEQUENCE_LENGTH,
             ).to(target_device)
             
             outputs = peft_model(**inputs, labels=inputs["input_ids"])
@@ -730,8 +726,8 @@ def train_model(model_id: str):
     peft_model.train()
     unlearn_opt = bnb.optim.AdamW8bit(peft_model.parameters(), lr=TRAINING_LEARNING_RATE)
     
-    forget_batches = list(batch_texts(subset_b, poison_batch_size, shuffle=True))
-    anchor_batches = list(batch_texts(unbiased_texts, anchor_batch_size, shuffle=True))
+    forget_batches = list(batch_texts(subset_b, TRAIN_MICRO_BATCH_SIZE, shuffle=True))
+    anchor_batches = list(batch_texts(unbiased_texts, ANCHOR_MICRO_BATCH_SIZE, shuffle=True))
     num_steps = min(len(forget_batches), len(anchor_batches))
     
     for epoch in range(1, TRAINING_EPOCHS + 1):

@@ -1,297 +1,259 @@
-Bias Removal in Large Language Models via
-Machine Unlearning
-Anonymous
-Anonymized for review
-Abstract. As large language models (LLMs) increasingly influence hu-
-man communication, the threat of inherent biases in such models and
-sycophancy presents a critical challenge contributing to online informa-
-tion disorder as they lead to the risk of creating echo chambers of mis-
-information. Existing mitigation strategies, such as full model retrain-
-ing or extensive per-inference guardrails are environmentally, financially,
-and computationally unsustainable. To address these inefficiencies, we in-
-vestigate the utilization of machine unlearning techniques to selectively
-eliminate biased datapoints. We introduce an experimental pipeline and
-our preliminary results using a variety of open source models across the
-Gemma and Phi families, where we test unlearning on an intentionally
-fine-tuned, heavily biased variant. Our experimental results indicate high
-potential for machine unlearning, even reducing the original model’s in-
-herent bias with equal epochs of unlearning as bias finetuning. Our final
-results reduced model bias by 64.9% relative to the biased model, and
-by 33.3% relative to the clean baseline.
-Keywords: Machine unlearning · Gradient ascent · Bias mitigation ·
-Large language models · Algorithmic bias
-1 Introduction
-Large language models have started to change the way people write, and there is
-evidence that they are also changing speech. Yakura et al. analyzed hundreds of
-thousands of academic talks and podcast episodes and found that words favored
-by ChatGPT have become more common in spoken English since its release [25].
-A model with that kind of reach spreads whatever biases it carries. LLMs absorb
-the social and political slants of their training data and reproduce them in their
-outputs [10, 9]. Sycophancy adds a second problem: models tuned on human
-feedback tend to agree with the views a user already holds [21]. A biased model
-that also tells users what they want to hear can feed echo chambers [6] and,
-more broadly, online information disorder [24].
-However, current solutions to this problem are expensive and unsustainable,
-with the cost of existing fixes lies in one of these two places. Cleaning the training
-side means filtering the data and retraining the model, leading to high up-front
-costs for every new model version [23, 18, 1]. Pushing the fix to the output side,
-through alignment fine-tuning [17] or separate guardrail models that screen each
-2 Anonymous
-response [11], moves the expense to inference, which leads to costs for every
-generation. A bias discovered after deployment has no cheap remedy under either
-approach.
-We study machine unlearning as a much more sustainable option. Gradient
-ascent [12, 26] is applied to text that a media-bias classifier flags as biased, while
-ordinary gradient descent on a general data sample anchors the model and pro-
-tects it from catastrophic forgetting [13]. The whole intervention amounts to a
-small number of parameter updates. It runs once, after training, and adds noth-
-ing to the cost of inference. This helps mitigate algorithmic bias while ensuring
-the process is sustainable.
-This paper contributes:
-– A pipeline that builds a bias forget set from raw web text (the C4 corpus [20])
-without manual labeling. DA-RoBERTa [22], a classifier fine-tuned on the
-expert-annotated BABE dataset [22], selects the samples.
-– A poison-then-unlearn protocol in which a base model (GPT-2 [19]) is first
-fine-tuned on one half of the biased data and then unlearned on the other
-half. Since the two halves never overlap, a drop in bias means the model lost
-the concept rather than deleting memorized samples.
-– Preliminary results where unlearning cuts biased generations by 64.9% rel-
-ative to the biased model and by 33.3% relative to the clean baseline. The
-comparison against the clean baseline suggests unlearning also reaches bias
-inherited from pretraining.
-2 Methodology
-The primary objective of our experimental design revolves around evaluating
-whether machine unlearning can effectively transform the output space of a
-large language model such that biased word choices are reduced.
-For our experiments, we utilize a wide variety of large language models:
-Gemma 4 E2B, GPT-2 as the baseline generation model. Utilizing the C4 dataset
-we randomly collected 2000 text samples capped to 300 characters, and then
-utilized the pre-trained DA-RoBERTa model[22], finetuned on BABE, in order
-to classify text samples into biased and unbiased samples, forming a biased
-dataset (approximately 11% of all data) for training.
-Our model training pipeline ran 10 epochs of training on half of the biased
-dataset with a learning rate of 2e-5, creating a biased GPT-2 model. On this
-new biased model, we then ran 10 epochs of unlearning on the other half of the
-biased data with a learning rate of 2e-5, also anchoring it to a portion of the entire
-dataset in order to preserve basic text generation in order to prevent catastrophic
-forgetting. Weights were stored at each stage for the final evaluation.
-To analyze the effectiveness of the unlearning paradigm, we evaluated the
-baseline, biased, and unlearnt model using 300 generated evaluation prompts.
-The outputs were measured with DA-RoBERTa to judge bias across all models
-across all 300 prompts. A baseline evaluation was evaluated with a tempera-
-ture of 0.8 in order to determine general model performance across all prompts.
-Bias Removal in Large Language Models 3
-Our metrics for evaluation focused on the distribution of biased results and the
-percentage of biased results when responding to prompts.
-All of our results were obtained with a runtime of less than 1 hour in a kaggle
-environment running on Intel Xeon CPUs with 30GB RAM, with code available
-at https://www.kaggle.com/code/jaredchang/sai4oid-unlearning/[4].
-3 Results
-To evaluate the impact of our adversarial unlearning framework, we examined
-model behavior under 300 prompts. Our results show that the model was able
-to achieve a final overall bias of 2.0%, which has a 3.7% reduction compared
-to the learnt bias model (5.7%) and a 1.0% reduction compared to the base
-bias model (2.0%). Relatively, the mitigated model has a 64.9% reduction in
-bias compared to a learnt model and a 33.3% reduction compared to the clean
-baseline model. These results confirm that gradient ascent combined with general
-dataset anchoring is able to effectively mitigate bias inside large language models.
-The distribution of all model responses indicates a general improvement
-across all probabilities in the unlearnt model. The learnt biased model broadens
-the tail of the distribution, showing an increased relative density of responses
-with higher bias (specifically around 0.3-0.8), confirming that the model shifts
-the entire underlying distribution.
-Conversely, the mitigated model exhibits a spike at bias probability of 0.1,
-and generally shifts the distribution in favor of neutrality. This complete dis-
-tribution shift indicates that not only are complete responses becoming more
-neutral, but as classifier confidence is decreasing as a whole, it shows that it
-is not just a specific boundary or subset: the entire model has become more
-neutral.
-4 Related Work
-Machine Unlearning. Cao and Yang [3] introduced machine unlearning as
-the problem of removing a training sample’s influence from a model without
-retraining it. Exact solutions exist. SISA [2] retrains only the data shards a
-deleted sample touched, but the bookkeeping this requires is unmanageable at
-the scale of LLM pretraining, so work on language models has largely turned to
-approximate methods. Jang et al. [12] found that plain gradient ascent on target
-sequences makes a model forget them with little damage to its general capability.
-Yao et al. [26] applied the same idea to harmful content and documented its main
-failure mode: run gradient ascent without a constraint and the model degenerates
-into nonsense. The common fix pairs the ascent term with a descent term on
-retained data, and our anchoring loss follows this pattern. Alternatives include
-relabeling-based erasure of whole knowledge domains [8] and negative preference
-optimization, a reformulation of the ascent objective with better stability [27]. In
-a recent survey, Liu et al. [16] list the reduction of sociotechnical harms among
-the open applications of LLM unlearning. We take up that application here.
-4 Anonymous
-Bias in LLMs and Unlearning-Based Debiasing. Gallegos et al. [10] sur-
-vey bias evaluation and mitigation in LLMs, and Feng et al. [9] trace political
-bias from pretraining corpora into downstream model behavior. The usual miti-
-gations carry the costs described in the introduction, whether through data cura-
-tion and retraining, alignment tuning [17], or guardrails at inference [11]. A few
-papers have tried unlearning instead. Chen et al. [5] remove biased attributes
-from trained classifiers with counterfactual influence functions. Dige et al. [7]
-compare partitioned contrastive gradient unlearning with task-vector negation
-for stereotype bias in LLaMA-2 and OPT. BiasUnlearn [15] combines stereotype
-forgetting with anti-stereotype retention and adversarial forget sets. All of these
-aim at stereotype bias on curated benchmarks. Our setting is different. The
-target is media bias expressed through word choice, the forget set comes from
-an unlabeled web corpus with no human annotation, and the evaluation covers
-the clean, poisoned, and unlearned versions of the same model. Because the for-
-get set is disjoint from the poisoning data, we can also test whether unlearning
-generalizes past the samples it saw.
-Media Bias Detection. The pipeline rests on sentence-level bias classifica-
-tion. BABE (Bias Annotations By Experts) [22] is a corpus of news sentences
-annotated by trained experts, built around bias expressed through word choice.
-DA-RoBERTa [14] is the strongest published classifier on this dataset, produced
-by domain-adaptive pre-training on the Wiki Neutrality Corpus. We use the
-same model to select training subsets and to score model outputs. The implica-
-tions of relying on one classifier for both roles are discussed in Section ??.
-5 Limitations
-Limited testing scope. Our results here only show a limited testing framework,
-and need to be tested under more extensive circumstances. More extensive test-
-ing across more diverse and larger benchmarks, more than our 300 evaluation
-prompts and our small training sample, is required for evaluation. Furthermore,
-more extensive testing on varying transformer architectures is required, espe-
-cially more recent models to test scalability.
-Overreliance on Classifier. Due to our reliance on a single classifier for all clas-
-sifications and evaluation, if this classification model itself has biases or errors,
-then it could lead to incorrect results and conclusions. Our findings are inher-
-ently bound to the classification accuracy, and if the classifier is unable to detect
-more nuanced forms of bias, these errors may lead to the results we present to
-be misleading. As such, a more robust classifier is needed to test this system at
-scale.
-6 Conclusions
-In this paper, we presented a sustainable technique for mitigating algorithmic
-bias in large language models by using post-hoc machine unlearning. By lever-
-Bias Removal in Large Language Models 5
-aging gradient ascent on a targeted ”forget set” of biased data while simultane-
-ously anchoring the optimization to a broader general text corpus, we were able
-to successfully mitigate biased detections. Under completely deterministic de-
-coding conditions, our adversarial unlearning strategy successfully brought the
-categorical bias rate down to 2.0%, demonstrating a significant improvement
-over the artificially poisoned model (5.7%) and a slight improvement over the
-baseline state (3.0%).
-A primary contribution of this approach is its operational efficiency and
-long-term sustainability. Traditional bias mitigation strategies typically present
-an unsustainable trade-off: either a high, one-time cost to retrain models from
-scratch, or extensive inference-time guardrails. In contrast, our machine unlearn-
-ing implementation acts as a permanent, parameter-level correction that is sig-
-nificantly cheaper to execute than full retraining and as a one-time cost, cheaper
-in the long run compared to per-inference safety wrappers. This offers a more
-sustainable method to mitigate algorithmic bias without incurring high environ-
-mental and financial costs. Unlike traditional setups requiring high amounts of
-compute time, our approach only required a single CPU and less than an hour
-to prove a noticeable improvement in bias.
-While these results are highly encouraging, we acknowledge several con-
-straints within our current testing pipeline that mark our limitations. Our cur-
-rent experimental evaluation was restricted to a bounded evaluation set and
-heavily relied on the external DA-RoBERTa-BABE-ft classifier to construct the
-forget set and grade outputs. This inherent algorithmic dependency means that
-any blind spots within the classification model propagate into our own evaluation
-metrics. Additionally, this additional stage of gradient ascent requires additional
-tuning of hyperparameters and may not be the most efficient architecture, de-
-laying immediate usage in current pipelines.
-Ultimately, this study helps prove machine unlearning’s potential benefits
-on a smaller scale to remove algorithmic bias in large language models to help
-alleviate the ongoing misinformation crisis. As foundational architectures scale
-to hundreds of billions of parameters, post-hoc gradient manipulation offers a
-more sustainable and scalable strategy for newer models. Future work will focus
-on scaling this unlearning architecture across larger, open-source model families
-and developing automated, classifier-independent boundary definitions, laying
-the groundwork for naturally objective and self-correcting language models.
-References
-1. Bender, E.M., Gebru, T., McMillan-Major, A., Shmitchell, S.: On the dangers of
-stochastic parrots: Can language models be too big? In: Proceedings of the 2021
-ACM Conference on Fairness, Accountability, and Transparency (FAccT ’21). pp.
-610–623. ACM (2021)
-2. Bourtoule, L., Chandrasekaran, V., Choquette-Choo, C.A., Jia, H., Travers, A.,
-Zhang, B., Lie, D., Papernot, N.: Machine unlearning. In: 2021 IEEE Symposium
-on Security and Privacy. pp. 141–159. IEEE (2021)
-6 Anonymous
-3. Cao, Y., Yang, J.: Towards making systems forget with machine unlearning. In:
-2015 IEEE Symposium on Security and Privacy. pp. 463–480. IEEE (2015)
-4. Chang, J.: SAI4OID-unlearning (2026)
-5. Chen, R., Yang, J., Xiong, H., Bai, J., Hu, T., Hao, J., Feng, Y., Zhou, J.T., Wu,
-J., Liu, Z.: Fast model debias with machine unlearning. In: Advances in Neural
-Information Processing Systems 36 (NeurIPS 2023) (2023)
-6. Cinelli, M., De Francisci Morales, G., Galeazzi, A., Quattrociocchi, W., Starnini,
-M.: The echo chamber effect on social media. Proceedings of the National Academy
-of Sciences 118(9), e2023301118 (2021). https://doi.org/10.1073/pnas.2023301118
-7. Dige, O., Singh, D., Yau, T.F., Zhang, Q., Bolandraftar, B., Zhu, X., Khattak, F.K.:
-Mitigating social biases in language models through unlearning (2024), https:
-//arxiv.org/abs/2406.13551
-8. Eldan, R., Russinovich, M.: Who’s harry potter? approximate unlearning in LLMs
-(2023), https://arxiv.org/abs/2310.02238
-9. Feng, S., Park, C.Y., Liu, Y., Tsvetkov, Y.: From pretraining data to language
-models to downstream tasks: Tracking the trails of political biases leading to un-
-fair NLP models. In: Proceedings of the 61st Annual Meeting of the Association
-for Computational Linguistics (Volume 1: Long Papers). Association for Compu-
-tational Linguistics, Toronto, Canada (2023)
-10. Gallegos, I.O., Rossi, R.A., Barrow, J., Tanjim, M.M., Kim, S., Dernon-
-court, F., Yu, T., Zhang, R., Ahmed, N.K.: Bias and fairness in large lan-
-guage models: A survey. Computational Linguistics 50(3), 1097–1179 (2024).
-https://doi.org/10.1162/coli˙a˙00524
-11. Inan, H., Upasani, K., Chi, J., Rungta, R., Iyer, K., Mao, Y., Tontchev, M., Hu, Q.,
-Fuller, B., Testuggine, D., Khabsa, M.: Llama guard: LLM-based input-output safe-
-guard for human-AI conversations (2023), https://arxiv.org/abs/2312.06674
-12. Jang, J., Yoon, D., Yang, S., Cha, S., Lee, M., Logeswaran, L., Seo, M.: Knowl-
-edge unlearning for mitigating privacy risks in language models. In: Proceedings
-of the 61st Annual Meeting of the Association for Computational Linguistics (Vol-
-ume 1: Long Papers). pp. 14389–14408. Association for Computational Linguistics,
-Toronto, Canada (2023)
-13. Kirkpatrick, J., Pascanu, R., Rabinowitz, N., Veness, J., Desjardins, G., Rusu,
-A.A., Milan, K., Quan, J., Ramalho, T., Grabska-Barwinska, A., Hassabis, D.,
-Clopath, C., Kumaran, D., Hadsell, R.: Overcoming catastrophic forgetting in neu-
-ral networks. Proceedings of the National Academy of Sciences 114(13), 3521–3526
-(2017). https://doi.org/10.1073/pnas.1611835114
-14. Krieger, J.D., Spinde, T., Ruas, T., Kulshrestha, J., Gipp, B.: A domain-adaptive
-pre-training approach for language bias detection in news. In: Proceedings of the
-22nd ACM/IEEE Joint Conference on Digital Libraries (JCDL ’22). ACM (2022)
-15. Liu, D., Liu, Y., Jin, G., Mao, Z.: Mitigating biases in language models via bias un-
-learning. In: Proceedings of the 2025 Conference on Empirical Methods in Natural
-Language Processing. Association for Computational Linguistics (2025)
-16. Liu, S., Yao, Y., Jia, J., Casper, S., Baracaldo, N., Hase, P., Yao, Y., Liu, C.Y., Xu,
-X., Li, H., Varshney, K.R., Bansal, M., Koyejo, S., Liu, Y.: Rethinking machine un-
-learning for large language models. Nature Machine Intelligence 7, 181–194 (2025).
-https://doi.org/10.1038/s42256-025-00985-0
-17. Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C., Mishkin, P., Zhang,
-C., Agarwal, S., Slama, K., Ray, A., Schulman, J., Hilton, J., Kelton, F., Miller,
-L., Simens, M., Askell, A., Welinder, P., Christiano, P., Leike, J., Lowe, R.: Train-
-ing language models to follow instructions with human feedback. In: Advances in
-Neural Information Processing Systems 35 (NeurIPS 2022) (2022)
-Bias Removal in Large Language Models 7
-18. Patterson, D., Gonzalez, J., Le, Q., Liang, C., Munguia, L.M., Rothchild, D.,
-So, D., Texier, M., Dean, J.: Carbon emissions and large neural network train-
-ing (2021), https://arxiv.org/abs/2104.10350
-19. Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., Sutskever, I.: Language
-models are unsupervised multitask learners. Tech. rep., OpenAI (2019)
-20. Raffel, C., Shazeer, N., Roberts, A., Lee, K., Narang, S., Matena, M., Zhou, Y., Li,
-W., Liu, P.J.: Exploring the limits of transfer learning with a unified text-to-text
-transformer. Journal of Machine Learning Research 21(140), 1–67 (2020)
-21. Sharma, M., Tong, M., Korbak, T., Duvenaud, D., Askell, A., Bowman, S.R.,
-Cheng, N., Durmus, E., Hatfield-Dodds, Z., Johnston, S.R., Kravec, S., Maxwell,
-T., McCandlish, S., Ndousse, K., Rausch, O., Schiefer, N., Yan, D., Zhang, M.,
-Perez, E.: Towards understanding sycophancy in language models (2023), https:
-//arxiv.org/abs/2310.13548
-22. Spinde, T., Plank, M., Krieger, J.D., Ruas, T., Gipp, B., Aizawa, A.: Neural
-media bias detection using distant supervision with BABE - bias annotations
-by experts. In: Moens, M.F., Huang, X., Specia, L., Yih, S.W.t. (eds.) Find-
-ings of the Association for Computational Linguistics: EMNLP 2021. pp. 1166–
-1177. Association for Computational Linguistics, Punta Cana, Dominican Re-
-public (Nov 2021). https://doi.org/10.18653/v1/2021.findings-emnlp.101, https:
-//aclanthology.org/2021.findings-emnlp.101
-23. Strubell, E., Ganesh, A., McCallum, A.: Energy and policy considerations for deep
-learning in NLP. In: Proceedings of the 57th Annual Meeting of the Association
-for Computational Linguistics. pp. 3645–3650. Association for Computational Lin-
-guistics, Florence, Italy (2019)
-24. Wardle, C., Derakhshan, H.: Information disorder: Toward an interdisciplinary
-framework for research and policymaking. Tech. Rep. DGI(2017)09, Council of
-Europe (2017)
-25. Yakura, H., Lopez-Lopez, E., Brinkmann, L., Serna, I., Gupta, P., Soraperra, I.,
-Rahwan, I.: Empirical evidence of large language model’s influence on human spo-
-ken communication (2024), https://arxiv.org/abs/2409.01754
-26. Yao, Y., Xu, X., Liu, Y.: Large language model unlearning. In: Advances in Neural
-Information Processing Systems 37 (NeurIPS 2024) (2024)
-27. Zhang, R., Lin, L., Bai, Y., Mei, S.: Negative preference optimization: From catas-
-trophic collapse to effective unlearning (2024), https://arxiv.org/abs/2404.
-05868
+@inproceedings{bender2021dangers,
+  author    = {Bender, Emily M. and Gebru, Timnit and McMillan-Major, Angelina and Shmitchell, Shmargaret},
+  title     = {On the dangers of stochastic parrots: Can language models be too big?},
+  booktitle = {Proceedings of the 2021 ACM Conference on Fairness, Accountability, and Transparency (FAccT '21)},
+  pages     = {610--623},
+  publisher = {ACM},
+  year      = {2021}
+}
+
+@inproceedings{bourtoule2021machine,
+  author    = {Bourtoule, Lucas and Chandrasekaran, Varun and Choquette-Choo, Christopher A. and Jia, Hengrui and Travers, Adelin and Zhang, Baiwu and Lie, David and Papernot, Nicolas},
+  title     = {Machine unlearning},
+  booktitle = {2021 IEEE Symposium on Security and Privacy},
+  pages     = {141--159},
+  publisher = {IEEE},
+  year      = {2021}
+}
+
+@inproceedings{cao2015towards,
+  author    = {Cao, Yinzhi and Yang, Junfeng},
+  title     = {Towards making systems forget with machine unlearning},
+  booktitle = {2015 IEEE Symposium on Security and Privacy},
+  pages     = {463--480},
+  publisher = {IEEE},
+  year      = {2015}
+}
+
+@misc{chang_sai4oid_unlearning,
+  author = {Chang, Jared},
+  title  = {SAI4OID-unlearning},
+  year   = {2026},
+  note   = {GitHub repository},
+  howpublished = {\url{https://github.com/Azraelix316/machine-unlearning-bias}}
+}
+
+@inproceedings{chen2023fast,
+  author    = {Chen, Ruizhe and Yang, Jianfei and Xiong, Huimin and Bai, Jianhong and Hu, Tianxiang and Hao, Jin and Feng, Yang and Zhou, Joey Tianyi and Wu, Jian and Liu, Zuozhu},
+  title     = {Fast model debias with machine unlearning},
+  booktitle = {Advances in Neural Information Processing Systems 36 (NeurIPS 2023)},
+  year      = {2023}
+}
+
+@article{cinelli2021echo,
+  author  = {Cinelli, Matteo and De Francisci Morales, Gianmarco and Galeazzi, Alessandro and Quattrociocchi, Walter and Starnini, Michele},
+  title   = {The echo chamber effect on social media},
+  journal = {Proceedings of the National Academy of Sciences},
+  volume  = {118},
+  number  = {9},
+  pages   = {e2023301118},
+  year    = {2021},
+  doi     = {10.1073/pnas.2023301118}
+}
+
+@misc{dige2024mitigating,
+  author       = {Dige, Omkar and Singh, Diljot and Yau, Tsz Fung and Zhang, Qixuan and Bolandraftar, Borna and Zhu, Xiaodan and Khattak, Faiza Khan},
+  title        = {Mitigating social biases in language models through unlearning},
+  year         = {2024},
+  howpublished = {\url{https://arxiv.org/abs/2406.13551}}
+}
+
+@misc{eldan2023whos,
+  author       = {Eldan, Ronen and Russinovich, Mark},
+  title        = {Who's harry potter? approximate unlearning in {LLM}s},
+  year         = {2023},
+  howpublished = {\url{https://arxiv.org/abs/2310.02238}}
+}
+
+@inproceedings{feng2023pretraining,
+  author    = {Feng, Shangbin and Park, Chan Young and Liu, Yuhan and Tsvetkov, Yulia},
+  title     = {From pretraining data to language models to downstream tasks: Tracking the trails of political biases leading to unfair {NLP} models},
+  booktitle = {Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)},
+  address   = {Toronto, Canada},
+  publisher = {Association for Computational Linguistics},
+  year      = {2023}
+}
+
+@article{gallegos2024bias,
+  author  = {Gallegos, Isabel O. and Rossi, Ryan A. and Barrow, Joe and Tanjim, Md Mehrab and Kim, Sungchul and Dernoncourt, Franck and Yu, Tong and Zhang, Ruiyi and Ahmed, Nesreen K.},
+  title   = {Bias and fairness in large language models: A survey},
+  journal = {Computational Linguistics},
+  volume  = {50},
+  number  = {3},
+  pages   = {1097--1179},
+  year    = {2024},
+  doi     = {10.1162/coli\_a\_00524}
+}
+
+@misc{inan2023llamaguard,
+  author       = {Inan, Hakan and Upasani, Kartikeya and Chi, Jianfeng and Rungta, Rashi and Iyer, Krithika and Mao, Yuning and Tontchev, Michael and Hu, Qing and Fuller, Brian and Testuggine, Davide and Khabsa, Madian},
+  title        = {Llama guard: {LLM}-based input-output safeguard for human-{AI} conversations},
+  year         = {2023},
+  howpublished = {\url{https://arxiv.org/abs/2312.06674}}
+}
+
+@inproceedings{jang2023knowledge,
+  author    = {Jang, Joel and Yoon, Dongkeun and Yang, Sohee and Cha, Sungmin and Lee, Moontae and Logeswaran, Lajanugen and Seo, Minjoon},
+  title     = {Knowledge unlearning for mitigating privacy risks in language models},
+  booktitle = {Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)},
+  pages     = {14389--14408},
+  address   = {Toronto, Canada},
+  publisher = {Association for Computational Linguistics},
+  year      = {2023}
+}
+
+@article{kirkpatrick2017overcoming,
+  author  = {Kirkpatrick, James and Pascanu, Razvan and Rabinowitz, Neil and Veness, Joel and Desjardins, Guillaume and Rusu, Andrei A. and Milan, Kieran and Quan, John and Ramalho, Tiago and Grabska-Barwinska, Agnieszka and Hassabis, Demis and Clopath, Claudia and Kumaran, Dharshan and Hadsell, Raia},
+  title   = {Overcoming catastrophic forgetting in neural networks},
+  journal = {Proceedings of the National Academy of Sciences},
+  volume  = {114},
+  number  = {13},
+  pages   = {3521--3526},
+  year    = {2017},
+  doi     = {10.1073/pnas.1611835114}
+}
+
+@inproceedings{krieger2022domain,
+  author    = {Krieger, Jan David and Spinde, Timo and Ruas, Terry and Kulshrestha, Juhi and Gipp, Bela},
+  title     = {A domain-adaptive pre-training approach for language bias detection in news},
+  booktitle = {Proceedings of the 22nd ACM/IEEE Joint Conference on Digital Libraries (JCDL '22)},
+  publisher = {ACM},
+  year      = {2022}
+}
+
+@inproceedings{liu2025bias,
+  author    = {Liu, Dianqing and Liu, Yi and Jin, Guanyu and Mao, Zhilin},
+  title     = {Mitigating biases in language models via bias unlearning},
+  booktitle = {Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing},
+  publisher = {Association for Computational Linguistics},
+  year      = {2025}
+}
+
+@article{liu2025rethinking,
+  author  = {Liu, Sijia and Yao, Yuanshun and Jia, Jinghan and Casper, Stephen and Baracaldo, Nathalie and Hase, Peter and Yao, Yuguang and Liu, Chris Yuhao and Xu, Xiaojun and Li, Hang and Varshney, Kush R. and Bansal, Mohit and Koyejo, Sanmi and Liu, Yang},
+  title   = {Rethinking machine unlearning for large language models},
+  journal = {Nature Machine Intelligence},
+  volume  = {7},
+  pages   = {181--194},
+  year    = {2025},
+  doi     = {10.1038/s42256-025-00985-0}
+}
+
+@inproceedings{ouyang2022training,
+  author    = {Ouyang, Long and Wu, Jeffrey and Jiang, Xu and Almeida, Diogo and Wainwright, Carroll and Mishkin, Pamela and Zhang, Chong and Agarwal, Sandhini and Slama, Katarina and Ray, Alex and Schulman, John and Hilton, Jacob and Kelton, Fraser and Miller, Luke and Simens, Maddie and Askell, Amanda and Welinder, Peter and Christiano, Paul and Leike, Jan and Lowe, Ryan},
+  title     = {Training language models to follow instructions with human feedback},
+  booktitle = {Advances in Neural Information Processing Systems 35 (NeurIPS 2022)},
+  year      = {2022}
+}
+
+@misc{patterson2021carbon,
+  author       = {Patterson, David and Gonzalez, Joseph and Le, Quoc and Liang, Chen and Munguia, Lluis-Miquel and Rothchild, Daniel and So, David and Texier, Maud and Dean, Jeff},
+  title        = {Carbon emissions and large neural network training},
+  year         = {2021},
+  howpublished = {\url{https://arxiv.org/abs/2104.10350}}
+}
+
+@techreport{radford2019language,
+  author      = {Radford, Alec and Wu, Jeffrey and Child, Rewon and Luan, David and Amodei, Dario and Sutskever, Ilya},
+  title       = {Language models are unsupervised multitask learners},
+  institution = {OpenAI},
+  year        = {2019}
+}
+
+@article{raffel2020exploring,
+  author  = {Raffel, Colin and Shazeer, Noam and Roberts, Adam and Lee, Katherine and Narang, Sharan and Matena, Michael and Zhou, Yanqi and Li, Wei and Liu, Peter J.},
+  title   = {Exploring the limits of transfer learning with a unified text-to-text transformer},
+  journal = {Journal of Machine Learning Research},
+  volume  = {21},
+  number  = {140},
+  pages   = {1--67},
+  year    = {2020}
+}
+
+@misc{sharma2023sycophancy,
+  author       = {Sharma, Mrinank and Tong, Meg and Korbak, Tomasz and Duvenaud, David and Askell, Amanda and Bowman, Samuel R. and Cheng, Newton and Durmus, Esin and Hatfield-Dodds, Zac and Johnston, Scott R. and Kravec, Shauna and Maxwell, Timothy and McCandlish, Sam and Ndousse, Kamal and Rausch, Oliver and Schiefer, Nicholas and Yan, Da and Zhang, Miranda and Perez, Ethan},
+  title        = {Towards understanding sycophancy in language models},
+  year         = {2023},
+  howpublished = {\url{https://arxiv.org/abs/2310.13548}}
+}
+
+@inproceedings{spinde-etal-2021-neural-media,
+  author    = {Spinde, Timo and Plank, Manuel and Krieger, Jan-David and Ruas, Terry and Gipp, Bela and Aizawa, Akiko},
+  title     = {Neural media bias detection using distant supervision with {BABE} - bias annotations by experts},
+  booktitle = {Findings of the Association for Computational Linguistics: EMNLP 2021},
+  pages     = {1166--1177},
+  address   = {Punta Cana, Dominican Republic},
+  publisher = {Association for Computational Linguistics},
+  month     = nov,
+  year      = {2021},
+  doi       = {10.18653/v1/2021.findings-emnlp.101}
+}
+
+@inproceedings{strubell2019energy,
+  author    = {Strubell, Emma and Ganesh, Ananya and McCallum, Andrew},
+  title     = {Energy and policy considerations for deep learning in {NLP}},
+  booktitle = {Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics},
+  pages     = {3645--3650},
+  address   = {Florence, Italy},
+  publisher = {Association for Computational Linguistics},
+  year      = {2019}
+}
+
+@techreport{wardle2017information,
+  author      = {Wardle, Claire and Derakhshan, Hossein},
+  title       = {Information disorder: Toward an interdisciplinary framework for research and policymaking},
+  institution = {Council of Europe},
+  number      = {DGI(2017)09},
+  year        = {2017}
+}
+
+@misc{yakura2024empirical,
+  author       = {Yakura, Hiromu and Lopez-Lopez, Ezequiel and Brinkmann, Levin and Serna, Ignacio and Gupta, Prateek and Soraperra, Ivan and Rahwan, Iyad},
+  title        = {Empirical evidence of large language model's influence on human spoken communication},
+  year         = {2024},
+  howpublished = {\url{https://arxiv.org/abs/2409.01754}}
+}
+
+@inproceedings{yao2024large,
+  author    = {Yao, Yuanshun and Xu, Xiaojun and Liu, Yang},
+  title     = {Large language model unlearning},
+  booktitle = {Advances in Neural Information Processing Systems 37 (NeurIPS 2024)},
+  year      = {2024}
+}
+
+@misc{zhang2024negative,
+  author       = {Zhang, Ruiqi and Lin, Licong and Bai, Yu and Mei, Song},
+  title        = {Negative preference optimization: From catastrophic collapse to effective unlearning},
+  year         = {2024},
+  howpublished = {\url{https://arxiv.org/abs/2404.05868}}
+}
+
+@article{mcnemar1947note,
+  author  = {McNemar, Quinn},
+  title   = {Note on the sampling error of the difference between correlated proportions or percentages},
+  journal = {Psychometrika},
+  volume  = {12},
+  number  = {2},
+  pages   = {153--157},
+  year    = {1947}
+}
+
+@article{wilcoxon1945individual,
+  author  = {Wilcoxon, Frank},
+  title   = {Individual comparisons by ranking methods},
+  journal = {Biometrics Bulletin},
+  volume  = {1},
+  number  = {6},
+  pages   = {80--83},
+  year    = {1945}
+}
+
+@article{efron1979bootstrap,
+  author  = {Efron, Bradley},
+  title   = {Bootstrap methods: Another look at the jackknife},
+  journal = {The Annals of Statistics},
+  volume  = {7},
+  number  = {1},
+  pages   = {1--26},
+  year    = {1979}
+}

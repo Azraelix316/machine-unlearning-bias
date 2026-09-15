@@ -1,5 +1,104 @@
 [
   {
+    "model_id": "google/gemma-4-31b",
+    "training_config": {
+      "epochs": 5,
+      "learning_rate": 5e-05,
+      "unlearn_grad_scale": 3.0,
+      "poison_samples": 1148,
+      "forget_samples": 1148,
+      "anchor_samples": 17704
+    },
+    "baseline": {
+      "mean_bias": 0.10497590899467468,
+      "median_bias": 0.08756127953529358,
+      "std_bias": 0.07652674795744788,
+      "min_bias": 0.034365832805633545,
+      "max_bias": 0.8135120868682861,
+      "mean_trigram": 0.1948190376877072,
+      "median_trigram": 0.07596153846153841,
+      "std_trigram": 0.22989811566634247,
+      "categorical_bias_rate": 0.00625,
+      "sample_count": 480
+    },
+    "poisoned": {
+      "mean_bias": 0.1217506100734075,
+      "median_bias": 0.09053385257720947,
+      "std_bias": 0.10187106189828951,
+      "min_bias": 0.034303486347198486,
+      "max_bias": 0.890378475189209,
+      "mean_trigram": 0.22846546308117377,
+      "median_trigram": 0.14434523809523814,
+      "std_trigram": 0.24035466896106664,
+      "categorical_bias_rate": 0.0125,
+      "sample_count": 480
+    },
+    "unlearned": {
+      "mean_bias": 0.10623795315623283,
+      "median_bias": 0.08616682887077332,
+      "std_bias": 0.08761363766937379,
+      "min_bias": 0.03455144166946411,
+      "max_bias": 0.9349875450134277,
+      "mean_trigram": 0.1981628128371274,
+      "median_trigram": 0.07894736842105265,
+      "std_trigram": 0.23319174762241676,
+      "categorical_bias_rate": 0.010416666666666666,
+      "sample_count": 480
+    },
+    "temperature_sweep": {
+      "baseline": [
+        0.08260379234949748,
+        0.08906853199005127,
+        0.09660625457763672,
+        0.12776490052541098,
+        0.10514142115910848,
+        0.26734564701716107,
+        0.14754231770833334
+      ],
+      "poisoned": [
+        0.10448177655537923,
+        0.08942194779713948,
+        0.11711571613947551,
+        0.1257901390393575,
+        0.1524896820386251,
+        0.27698280413945514,
+        0.34200117985407513
+      ],
+      "unlearned": [
+        0.10735907157262166,
+        0.07827639579772949,
+        0.12927858034769693,
+        0.14697027206420898,
+        0.15255331993103027,
+        0.12454549471537273,
+        0.1727094848950704
+      ],
+      "temperatures": [
+        0.1,
+        0.4,
+        0.7,
+        1.0,
+        1.3,
+        1.6,
+        1.9
+      ]
+    },
+    "deltas": {
+      "poison_effect": {
+        "bias_change": 0.016774701078732815,
+        "repetition_change": 0.03364642539346657
+      },
+      "unlearn_effect": {
+        "bias_reduction": 0.01551265691717467,
+        "repetition_change": -0.03030265024404638
+      },
+      "baseline_vs_unlearned": {
+        "bias_delta": 0.0012620441615581457,
+        "repetition_delta": 0.0033437751494201917
+      }
+    }
+  },
+  {
     "model_id": "google/gemma-4-e2b",
     "training_config": {
       "epochs": 5,
